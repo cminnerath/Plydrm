@@ -258,7 +258,12 @@ void PlydrmAudioProcessor::evolvePatterns()
 
 void PlydrmAudioProcessor::randomizeSeed()
 {
-    requestedSeed.store (static_cast<uint32_t> (mutationRandom.nextInt64()), std::memory_order_relaxed);
+    setSeed (static_cast<uint32_t> (mutationRandom.nextInt64()));
+}
+
+void PlydrmAudioProcessor::setSeed (uint32_t seed) noexcept
+{
+    requestedSeed.store (seed, std::memory_order_relaxed);
     seedRequested.store (true, std::memory_order_release);
 }
 

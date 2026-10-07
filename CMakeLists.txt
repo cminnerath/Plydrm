@@ -99,12 +99,16 @@ if(PLYDRM_BUILD_PLUGIN)
     if(PLYDRM_BUILD_TESTS)
         # Links the plugin's shared-code library (which already contains the
         # compiled JUCE modules) and borrows its include paths and defines.
-        add_executable(ProcessorTests Tests/ProcessorTests.cpp)
-        target_link_libraries(ProcessorTests PRIVATE Plydrm plydrm_engine)
-        target_include_directories(ProcessorTests PRIVATE
-            $<TARGET_PROPERTY:Plydrm,INCLUDE_DIRECTORIES>)
-        target_compile_definitions(ProcessorTests PRIVATE
-            $<TARGET_PROPERTY:Plydrm,COMPILE_DEFINITIONS>)
-        add_test(NAME ProcessorTests COMMAND ProcessorTests)
+        # ProcessorTests: targeted checks of the JUCE glue. SoakTests: fuzz, block-layout determinism and cost
+        # (`SoakTests full` is the long version).
+        foreach(test_name ProcessorTests SoakTests)
+            add_executable(${test_name} Tests/${test_name}.cpp)
+            target_link_libraries(${test_name} PRIVATE Plydrm plydrm_engine)
+            target_include_directories(${test_name} PRIVATE
+                $<TARGET_PROPERTY:Plydrm,INCLUDE_DIRECTORIES>)
+            target_compile_definitions(${test_name} PRIVATE
+                $<TARGET_PROPERTY:Plydrm,COMPILE_DEFINITIONS>)
+            add_test(NAME ${test_name} COMMAND ${test_name})
+        endforeach()
     endif()
 endif()

@@ -1,4 +1,5 @@
 #include "DrumSynth.h"
+#include <algorithm>
 #include <cmath>
 
 namespace plydrm
@@ -152,23 +153,23 @@ float DrumSynth::renderSample (ActiveHit& hit)
 
 void DrumSynth::renderNextBlock (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
+    if (std::none_of (hits.begin(), hits.end(), [] (const ActiveHit& h) { return h.active; }))
+        return;
+
     const int numChannels = buffer.getNumChannels();
 
-    for (auto& hit : hits)
+    // Sample by sample, every hit in turn: the noise generator is then drawn
+    // in the same order however the block is split, so the output does not
+    // depend on the host's block size.
+    for (int i = 0; i < numSamples; ++i)
     {
-        if (! hit.active)
-            continue;
+        float s = 0.0f;
+        for (auto& hit : hits)
+            if (hit.active)
+                s += renderSample (hit);
 
-        for (int i = 0; i < numSamples; ++i)
-        {
-            const float s = renderSample (hit);
-
-            for (int ch = 0; ch < numChannels; ++ch)
-                buffer.addSample (ch, startSample + i, s);
-
-            if (! hit.active)
-                break;
-        }
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.addSample (ch, startSample + i, s);
     }
 }
 

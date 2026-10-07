@@ -56,6 +56,12 @@ public:
         vector reserved to that size never reallocates. */
     static constexpr int kMaxPendingEvents = 256;
 
+    /** Largest humanize offset (the humanize parameter's maximum). Steps are
+        scheduled this far ahead of the block being processed, so a hit pulled
+        early always lands in a block not yet rendered: where it lands never
+        depends on how the host cuts its blocks. */
+    static constexpr float kMaxHumanizeMs = 30.0f;
+
     PatternEngine();
 
     void prepareToPlay (double newSampleRate);

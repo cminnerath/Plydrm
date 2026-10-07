@@ -5,67 +5,20 @@
 // left hanging, and that New Seed is safe to press while audio runs.
 
 #include "../Source/PluginProcessor.h"
+#include "AllocCounter.h"
+#include "FakeHost.h"
 
 #include <atomic>
 #include <cstdio>
-#include <cstdlib>
-#include <new>
 #include <thread>
 #include <vector>
 
 using namespace plydrm;
-
-// ---- allocation counter (from Brimstone's SoakTests) ------------------------
-// Counts every operator new / delete made by a thread while its `countingAllocs`
-// is set. Only processBlock is wrapped in a CountScope, so the harness (and
-// other threads) are free to allocate.
-
-static thread_local bool countingAllocs = false;
-static long allocCount = 0, freeCount = 0;
-
-void* operator new (std::size_t n)
-{
-    if (countingAllocs)
-        ++allocCount;
-    if (void* p = std::malloc (n ? n : 1))
-        return p;
-    throw std::bad_alloc();
-}
-void* operator new[] (std::size_t n) { return ::operator new (n); }
-void operator delete (void* p) noexcept { if (countingAllocs && p != nullptr) ++freeCount; std::free (p); }
-void operator delete[] (void* p) noexcept { ::operator delete (p); }
-void operator delete (void* p, std::size_t) noexcept { ::operator delete (p); }
-void operator delete[] (void* p, std::size_t) noexcept { ::operator delete (p); }
-
-struct CountScope
-{
-    CountScope() { countingAllocs = true; }
-    ~CountScope() { countingAllocs = false; }
-};
+using test::FakePlayHead;
 
 namespace
 {
     constexpr double kSampleRate = 48000.0;      // 1/16 at 120 BPM = 6000 samples
-
-    struct FakePlayHead final : juce::AudioPlayHead
-    {
-        juce::int64 samplePos = 0;
-        double startPpq = 0.0;
-        double bpm = 120.0;
-        bool playing = true;
-
-        juce::Optional<PositionInfo> getPosition() const override
-        {
-            PositionInfo info;
-            info.setBpm (bpm);
-            info.setTimeSignature (TimeSignature { 4, 4 });
-            info.setIsPlaying (playing);
-            const double ppq = startPpq + (double) samplePos * bpm / (60.0 * kSampleRate);
-            info.setPpqPosition (ppq);
-            info.setPpqPositionOfLastBarStart (std::floor (ppq / 4.0) * 4.0);
-            return info;
-        }
-    };
 
     int failures = 0;
 
@@ -78,9 +31,7 @@ namespace
 
     void setParam (PlydrmAudioProcessor& p, const juce::String& id, float value)
     {
-        auto* param = p.apvts.getParameter (id);
-        jassert (param != nullptr);
-        param->setValueNotifyingHost (param->convertTo0to1 (value));
+        test::setParam (p.apvts, id, value);
     }
 
     // Only the hat, on every 1/16 step, with no humanize or swing. The hat
@@ -120,7 +71,7 @@ namespace
             buffer.setSize (2, n, false, false, true);
             midi.clear();
             if (ph != nullptr)
-                ph->samplePos = start;
+                ph->moveTo (start);
             p.processBlock (buffer, midi);
             for (int i = 0; i < n; ++i)
                 out.push_back (buffer.getSample (0, i));
@@ -141,7 +92,7 @@ namespace
         for (int64_t s = start; s < start + total; s += blockSize)
         {
             midi.clear();
-            ph.samplePos = s;
+            ph.moveTo (s);
             p.processBlock (buffer, midi);
             for (const auto meta : midi)
             {
@@ -256,7 +207,7 @@ int main()
             if (block % 150 == 0)
                 setParam (p, ParamIDs::midiOutEnabled, (block / 150) % 2 == 0 ? 1.0f : 0.0f);
             ph.playing = (block / 200) % 4 != 3;
-            ph.samplePos = pos;
+            ph.moveTo (pos);
 
             buffer.setSize (2, n, false, false, true);
             midi.clear();
@@ -350,7 +301,7 @@ int main()
         for (int block = 0; block < 4000; ++block)
         {
             midi.clear();
-            ph.samplePos = block * 256;
+            ph.moveTo (block * 256);
             p.processBlock (buffer, midi);
             for (int i = 0; i < 256; ++i)
                 finite = finite && std::isfinite (buffer.getSample (0, i));

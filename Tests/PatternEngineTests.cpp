@@ -269,8 +269,9 @@ void runPatternEngineTests()
     {
         auto pattern = [] (PatternEngine& engine)
         {
-            auto kick = allHits (5); kick.hits = 3; kick.swingPercent = 30.0f;
-            auto hat = allHits (7);  hat.hits = 4; hat.rotation = 2;
+            // Humanize pulls hits up to 20 ms early, across block boundaries.
+            auto kick = allHits (5); kick.hits = 3; kick.swingPercent = 30.0f; kick.humanizeMs = 20.0f;
+            auto hat = allHits (7);  hat.hits = 4; hat.rotation = 2; hat.humanizeMs = 20.0f;
             engine.setVoiceParams (VoiceId::Kick, kick);
             engine.setVoiceParams (VoiceId::Snare, hat);
             VoiceParams off; off.enabled = false;

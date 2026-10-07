@@ -119,10 +119,13 @@ void PatternEngine::handleStep (int64_t stepIndex, int64_t stepSample, int64_t b
         double jitterSamples = 0.0;
         if (v.params.humanizeMs > 0.0f)
         {
-            std::uniform_real_distribution<float> jit (-v.params.humanizeMs, v.params.humanizeMs);
+            const float range = std::min (v.params.humanizeMs, kMaxHumanizeMs);
+            std::uniform_real_distribution<float> jit (-range, range);
             jitterSamples = static_cast<double> (jit (v.rng)) / 1000.0 * sampleRate;
         }
 
+        // Only a step right after playback (re)starts can be pulled before the
+        // block it is found in; it plays at the start of that block instead.
         int64_t fireSample = stepSample + static_cast<int64_t> (std::llround (delaySamples + jitterSamples));
         fireSample = std::max (fireSample, blockStart);
 
@@ -192,11 +195,16 @@ void PatternEngine::process (const HostTimeInfo& host, int numSamples, std::vect
         const double stepLen = stepLengthQuarterNotes;
         const double samplesPerStep = stepLen / ppqPerSample;
 
-        // Step k sits at PPQ k * stepLen. Take every step in [startPpq, endPpq).
+        // Look ahead by the largest humanize offset (plus a sample for rounding),
+        // so a hit humanized early is scheduled before its block is rendered.
+        const double lookaheadSamples = std::ceil (static_cast<double> (kMaxHumanizeMs) * 0.001 * sampleRate) + 1.0;
+        const double scheduleEndPpq = endPpq + lookaheadSamples * ppqPerSample;
+
+        // Step k sits at PPQ k * stepLen. Take every step in [startPpq, scheduleEndPpq).
         for (auto k = static_cast<int64_t> (std::ceil (startPpq / stepLen - kPpqEpsilon)); ; ++k)
         {
             const double stepPpq = static_cast<double> (k) * stepLen;
-            if (stepPpq >= endPpq - kPpqEpsilon)
+            if (stepPpq >= scheduleEndPpq - kPpqEpsilon)
                 break;
 
             // A step a few ULPs before a block edge can be seen by both blocks.
@@ -204,7 +212,7 @@ void PatternEngine::process (const HostTimeInfo& host, int numSamples, std::vect
                 continue;
 
             const double offset = std::max (0.0, (stepPpq - startPpq) / ppqPerSample);
-            const int64_t stepSample = std::min (blockEnd - 1, blockStart + static_cast<int64_t> (std::llround (offset)));
+            const int64_t stepSample = blockStart + static_cast<int64_t> (std::llround (offset));
             handleStep (k, stepSample, blockStart, samplesPerStep);
 
             lastStepPpq = stepPpq;

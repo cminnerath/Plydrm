@@ -99,7 +99,23 @@ fake host play head. It checks that:
   the host calls `prepareToPlay` while a note is on
 - pressing New Seed from another thread while audio runs is safe
 
-To check that last one for data races, build it with ThreadSanitizer:
+`SoakTests` (ported from Brimstone) fuzzes the whole audio path: random
+parameter changes, Evolve, New Seed, tempo changes and ramps, transport
+stops / starts / jumps / loops, missing host fields and play heads, odd time
+signatures and re-prepare, at five sample rates, block sizes 1-4096, mono
+and stereo. The output must stay finite and bounded, MIDI well formed with
+no hanging notes, and `processBlock` must never allocate. It also renders the
+same sessions with different block layouts and requires bit-identical audio
+and MIDI (an offline export sounds exactly like the realtime session), and
+prints the cost per sample of a few patches. `ctest` runs a quick version;
+for the long one:
+
+```bash
+./build/SoakTests full
+```
+
+To check `ProcessorTests`' New Seed test for data races, build it with
+ThreadSanitizer:
 
 ```bash
 cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \

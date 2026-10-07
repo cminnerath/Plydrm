@@ -43,6 +43,6 @@ Source/
     PatternEngine.*           Sample-accurate polymetric trigger scheduler
   Synth/
     DrumSynth.*               Kick/snare/hat/perc synthesis voices
-Tests/                        Standalone unit tests for Engine/* (ctest)
+Tests/                        Engine unit tests, processor tests and soak tests (ctest)
 BUILD.md                      Build + DAW-loading instructions
 ```

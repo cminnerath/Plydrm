@@ -66,6 +66,10 @@ public:
         and the audio thread applies it at the start of its next block. */
     void randomizeSeed();
 
+    /** Like randomizeSeed(), with a given seed: the same seed gives the same
+        probability rolls, humanize and hit variation. Same threading rules. */
+    void setSeed (uint32_t seed) noexcept;
+
     /** What the host last reported, published by the audio thread for the
         GUI (which must not query the play head itself). */
     double getDisplayBpm() const noexcept     { return displayBpm.load (std::memory_order_relaxed); }
