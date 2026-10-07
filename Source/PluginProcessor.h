@@ -61,8 +61,16 @@ public:
     void evolvePatterns();
 
     /** Re-seeds the pattern engine's RNGs (probability rolls, humanize
-        jitter, synth hit variation) - the "randomize seed" GUI button. */
+        jitter) and the synth's (hit variation) - the "New Seed" GUI button.
+        Safe to call from the message thread: it only posts the new seed,
+        and the audio thread applies it at the start of its next block. */
     void randomizeSeed();
+
+    /** What the host last reported, published by the audio thread for the
+        GUI (which must not query the play head itself). */
+    double getDisplayBpm() const noexcept     { return displayBpm.load (std::memory_order_relaxed); }
+    bool hostReportsTempo() const noexcept    { return displayHasHostTempo.load (std::memory_order_relaxed); }
+    bool hostIsPlaying() const noexcept       { return displayPlaying.load (std::memory_order_relaxed); }
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -77,13 +85,30 @@ private:
     PatternEngine patternEngine;
     DrumSynth drumSynth;
 
+    // Reused every block; reserved up front so the audio thread never grows it.
+    std::vector<TriggerEvent> triggers;
+
     struct PendingNoteOff
     {
         int64_t firePosition;
         int note;
     };
+    // Bounded: when full, new MIDI notes are skipped rather than grown on the
+    // audio thread (a note-on is only sent if its note-off fits).
+    static constexpr size_t kMaxPendingNoteOffs = 256;
     std::vector<PendingNoteOff> pendingNoteOffs;
     int64_t samplePosition = 0;
+    int64_t noteLengthSamples = 1323;       // 30 ms MIDI notes; set from the rate in prepareToPlay
+
+    // New Seed: posted by the message thread, applied by the audio thread.
+    std::atomic<uint32_t> requestedSeed { 0 };
+    std::atomic<bool> seedRequested { false };
+
+    // Host state for the GUI (see getDisplayBpm).
+    static_assert (std::atomic<double>::is_always_lock_free);
+    std::atomic<double> displayBpm { 120.0 };
+    std::atomic<bool> displayHasHostTempo { false };
+    std::atomic<bool> displayPlaying { false };
 
     juce::Random mutationRandom;
 

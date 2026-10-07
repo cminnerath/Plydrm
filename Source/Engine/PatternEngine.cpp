@@ -30,12 +30,13 @@ PatternEngine::PatternEngine()
 {
     for (int i = 0; i < numVoices; ++i)
         voices[static_cast<size_t> (i)].params = {};
+
+    pending.reserve (kMaxPendingEvents);
 }
 
 void PatternEngine::prepareToPlay (double newSampleRate)
 {
     sampleRate = newSampleRate > 0.0 ? newSampleRate : 44100.0;
-    pending.reserve (256);
     resetPosition();
 }
 
@@ -62,7 +63,7 @@ void PatternEngine::setVoiceParams (VoiceId voice, const VoiceParams& params)
 
 void PatternEngine::regeneratePatternIfNeeded (VoiceRuntime& v)
 {
-    const int steps = std::max (1, v.params.steps);
+    const int steps = std::clamp (v.params.steps, 1, kMaxPatternSteps);
     const int hits = std::clamp (v.params.hits, 0, steps);
     const int rotation = v.params.rotation;
 
@@ -81,7 +82,7 @@ void PatternEngine::reseed (uint32_t newSeed)
         voices[i].rng.seed (newSeed + static_cast<uint32_t> (i) * 7919u);
 }
 
-const std::vector<bool>& PatternEngine::getPatternForVoice (VoiceId voice) const
+const Pattern& PatternEngine::getPatternForVoice (VoiceId voice) const
 {
     return voices[static_cast<size_t> (voice)].pattern;
 }
@@ -91,14 +92,14 @@ void PatternEngine::handleStep (int64_t stepIndex, int64_t stepSample, int64_t b
     for (int vi = 0; vi < numVoices; ++vi)
     {
         auto& v = voices[static_cast<size_t> (vi)];
-        if (! v.params.enabled || v.pattern.empty())
+        if (! v.params.enabled || v.pattern.length == 0)
             continue;
 
-        const int64_t steps = static_cast<int64_t> (v.pattern.size());
+        const int64_t steps = v.pattern.length;
         const int64_t localStep = positiveMod (stepIndex, steps);
         const int64_t loopRepeat = floorDiv (stepIndex, steps);
 
-        if (! v.pattern[static_cast<size_t> (localStep)])
+        if (! v.pattern[static_cast<int> (localStep)])
             continue;
 
         const int64_t everyN = std::max (1, v.params.everyN);
@@ -126,7 +127,13 @@ void PatternEngine::handleStep (int64_t stepIndex, int64_t stepSample, int64_t b
         fireSample = std::max (fireSample, blockStart);
 
         std::uniform_real_distribution<float> velRange (0.75f, 1.0f);
-        pending.push_back ({ fireSample, static_cast<VoiceId> (vi), velRange (v.rng) });
+        const float velocity = velRange (v.rng);
+
+        // Full queue: drop the hit rather than allocate on the audio thread.
+        if (pending.size() >= static_cast<size_t> (kMaxPendingEvents))
+            continue;
+
+        pending.push_back ({ fireSample, static_cast<VoiceId> (vi), velocity });
     }
 }
 

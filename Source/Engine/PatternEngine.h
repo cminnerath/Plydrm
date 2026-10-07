@@ -49,6 +49,13 @@ struct TriggerEvent
 class PatternEngine
 {
 public:
+    /** Most hits that can be scheduled ahead at once (swing / humanize
+        delays carry hits into later blocks). Hits beyond this are dropped
+        rather than growing the queue on the audio thread. process() appends
+        at most 2 * kMaxPendingEvents triggers per call, so an outTriggers
+        vector reserved to that size never reallocates. */
+    static constexpr int kMaxPendingEvents = 256;
+
     PatternEngine();
 
     void prepareToPlay (double newSampleRate);
@@ -73,9 +80,10 @@ public:
         touching cached patterns or RNG state. */
     void resetPosition();
 
-    /** Returns the cached Euclidean pattern currently in use for a voice,
-        mainly for GUI visualisation and unit tests. */
-    const std::vector<bool>& getPatternForVoice (VoiceId voice) const;
+    /** Returns the cached Euclidean pattern currently in use for a voice.
+        Audio thread and tests only: the GUI must not read it while the
+        audio thread may be rebuilding it. */
+    const Pattern& getPatternForVoice (VoiceId voice) const;
 
     double getBpm() const noexcept { return clock.getBpm(); }
 
@@ -83,7 +91,7 @@ private:
     struct VoiceRuntime
     {
         VoiceParams params;
-        std::vector<bool> pattern;
+        Pattern pattern;
         int cachedSteps = -1;
         int cachedHits = -1;
         int cachedRotation = -1;

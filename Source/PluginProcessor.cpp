@@ -17,7 +17,13 @@ PlydrmAudioProcessor::PlydrmAudioProcessor()
       apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
     cacheParamPointers();
-    patternEngine.reseed (static_cast<uint32_t> (juce::Time::getMillisecondCounter()));
+
+    const auto seed = static_cast<uint32_t> (juce::Time::getMillisecondCounter());
+    patternEngine.reseed (seed);
+    drumSynth.reseed (seed ^ 0x9e3779b9u);
+
+    triggers.reserve (2 * PatternEngine::kMaxPendingEvents);
+    pendingNoteOffs.reserve (kMaxPendingNoteOffs);
 }
 
 void PlydrmAudioProcessor::cacheParamPointers()
@@ -47,10 +53,15 @@ void PlydrmAudioProcessor::cacheParamPointers()
 
 void PlydrmAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    noteLengthSamples = juce::jmax<int64_t> (1, static_cast<int64_t> (sampleRate * 0.03));
     patternEngine.prepareToPlay (sampleRate);
     drumSynth.prepare (sampleRate, samplesPerBlock);
     samplePosition = 0;
-    pendingNoteOffs.clear();
+
+    // Notes still waiting for their note-off would be left hanging on the
+    // receiving instrument: send those note-offs at the start of the next block.
+    for (auto& off : pendingNoteOffs)
+        off.firePosition = 0;
 }
 
 void PlydrmAudioProcessor::releaseResources() {}
@@ -112,7 +123,16 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     buffer.clear();
     midiMessages.clear();
 
+    // --- New Seed (posted by the message thread) ----------------------------
+    if (seedRequested.exchange (false, std::memory_order_acquire))
+    {
+        const auto seed = requestedSeed.load (std::memory_order_relaxed);
+        patternEngine.reseed (seed);
+        drumSynth.reseed (seed ^ 0x9e3779b9u);
+    }
+
     // --- Host transport ---------------------------------------------------
+    const auto host = readHostTime();
     const int divisionIndex = juce::jlimit (0, (int) stepDivisionQuarterLength.size() - 1,
                                              static_cast<int> (std::lround (stepDivisionParam->load())));
     patternEngine.setStepLength (stepDivisionQuarterLength[static_cast<size_t> (divisionIndex)]);
@@ -125,8 +145,12 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         patternEngine.setVoiceParams (static_cast<VoiceId> (i), readVoiceParams (i, densityFactor));
 
     // --- Generate this block's triggers -------------------------------------
-    std::vector<TriggerEvent> triggers;
-    patternEngine.process (readHostTime(), numSamples, triggers);
+    triggers.clear();
+    patternEngine.process (host, numSamples, triggers);
+
+    displayBpm.store (patternEngine.getBpm(), std::memory_order_relaxed);
+    displayHasHostTempo.store (host.hasBpm, std::memory_order_relaxed);
+    displayPlaying.store (host.isPlaying, std::memory_order_relaxed);
 
     const bool midiOutEnabled = midiOutEnabledParam->load() > 0.5f;
     const bool synthEnabled = synthEnabledParam->load() > 0.5f;
@@ -155,13 +179,13 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             drumSynth.noteOn (trig.voice, trig.velocity * level, pitch);
         }
 
-        if (midiOutEnabled)
+        if (midiOutEnabled && pendingNoteOffs.size() < kMaxPendingNoteOffs)
         {
             const int velocity127 = juce::jlimit (1, 127, static_cast<int> (std::lround (trig.velocity * level * 127.0f)));
             midiMessages.addEvent (juce::MidiMessage::noteOn (10, info.gmNote, static_cast<juce::uint8> (velocity127)),
                                     trig.sampleOffset);
 
-            const int64_t noteOffAt = blockStart + trig.sampleOffset + juce::jmax<int64_t> (1, static_cast<int64_t> (getSampleRate() * 0.03));
+            const int64_t noteOffAt = blockStart + trig.sampleOffset + noteLengthSamples;
             pendingNoteOffs.push_back ({ noteOffAt, info.gmNote });
         }
     }
@@ -170,20 +194,19 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (synthEnabled && rendered < numSamples)
         drumSynth.renderNextBlock (buffer, rendered, numSamples - rendered);
 
-    if (midiOutEnabled)
+    // Note-offs go out even when MIDI Out has just been switched off, so no
+    // note it already started is left hanging.
+    for (auto it = pendingNoteOffs.begin(); it != pendingNoteOffs.end(); )
     {
-        for (auto it = pendingNoteOffs.begin(); it != pendingNoteOffs.end(); )
+        if (it->firePosition < blockEnd)
         {
-            if (it->firePosition < blockEnd)
-            {
-                const int offset = juce::jlimit (0, numSamples - 1, static_cast<int> (it->firePosition - blockStart));
-                midiMessages.addEvent (juce::MidiMessage::noteOff (10, it->note), offset);
-                it = pendingNoteOffs.erase (it);
-            }
-            else
-            {
-                ++it;
-            }
+            const int offset = juce::jlimit (0, numSamples - 1, static_cast<int> (it->firePosition - blockStart));
+            midiMessages.addEvent (juce::MidiMessage::noteOff (10, it->note), offset);
+            it = pendingNoteOffs.erase (it);
+        }
+        else
+        {
+            ++it;
         }
     }
 
@@ -235,7 +258,8 @@ void PlydrmAudioProcessor::evolvePatterns()
 
 void PlydrmAudioProcessor::randomizeSeed()
 {
-    patternEngine.reseed (static_cast<uint32_t> (mutationRandom.nextInt64()));
+    requestedSeed.store (static_cast<uint32_t> (mutationRandom.nextInt64()), std::memory_order_relaxed);
+    seedRequested.store (true, std::memory_order_release);
 }
 
 void PlydrmAudioProcessor::getStateInformation (juce::MemoryBlock& destData)

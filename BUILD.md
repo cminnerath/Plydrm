@@ -88,9 +88,26 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 `ProcessorTests` (built with the plugin) drives the real processor through a
-fake host play head: it checks that each synth hit starts on its own sample
-at several block sizes, that hits land on the host's grid, and that the
-plugin is silent while the host is stopped.
+fake host play head. It checks that:
+
+- each synth hit starts on its own sample at several block sizes
+- hits land on the host's grid, and the plugin is silent while the host is
+  stopped
+- `processBlock` never allocates (it counts `operator new` around it, while
+  parameters, block sizes, tempo and transport change)
+- every MIDI note-on gets its note-off, even when MIDI Out is switched off or
+  the host calls `prepareToPlay` while a note is on
+- pressing New Seed from another thread while audio runs is safe
+
+To check that last one for data races, build it with ThreadSanitizer:
+
+```bash
+cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_CXX_FLAGS=-fsanitize=thread -DCMAKE_C_FLAGS=-fsanitize=thread \
+    -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+cmake --build build-tsan --target ProcessorTests
+./build-tsan/ProcessorTests
+```
 
 ## Loading Plydrm in a DAW for testing
 

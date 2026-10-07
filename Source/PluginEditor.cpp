@@ -151,21 +151,15 @@ void PlydrmAudioProcessorEditor::resized()
 
 void PlydrmAudioProcessorEditor::timerCallback()
 {
-    if (auto* playHead = plydrmProcessor.getPlayHead())
-    {
-        if (auto position = playHead->getPosition())
-        {
-            if (auto bpm = position->getBpm())
-            {
-                const bool playing = position->getIsPlaying();
-                tempoLabel.setText (juce::String::formatted ("Tempo: %.1f BPM%s", *bpm, playing ? " (playing)" : ""),
-                                     juce::dontSendNotification);
-                return;
-            }
-        }
-    }
-
-    tempoLabel.setText ("Tempo: free-run 120 BPM", juce::dontSendNotification);
+    // Read what the audio thread published: the play head may only be asked
+    // from inside processBlock.
+    if (plydrmProcessor.hostReportsTempo())
+        tempoLabel.setText (juce::String::formatted ("Tempo: %.1f BPM%s", plydrmProcessor.getDisplayBpm(),
+                                                     plydrmProcessor.hostIsPlaying() ? " (playing)" : ""),
+                            juce::dontSendNotification);
+    else
+        tempoLabel.setText (juce::String::formatted ("Tempo: free-run %.0f BPM", plydrmProcessor.getDisplayBpm()),
+                            juce::dontSendNotification);
 }
 
 } // namespace plydrm

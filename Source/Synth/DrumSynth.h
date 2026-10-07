@@ -18,6 +18,9 @@ public:
 
     void prepare (double sampleRate, int maxBlockSize);
 
+    /** Re-seeds the per-hit variation and noise. Audio thread only. */
+    void reseed (uint32_t seed) noexcept { rng.seed (seed); }
+
     /** Triggers one hit for a voice. pitchSemitones is the user's per-voice
         tuning offset; velocity is 0-1. */
     void noteOn (VoiceId voice, float velocity, float pitchSemitones);

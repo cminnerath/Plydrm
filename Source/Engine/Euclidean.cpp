@@ -4,85 +4,114 @@
 namespace plydrm
 {
 
-std::vector<bool> euclideanPattern (int steps, int hits)
+Pattern euclideanPattern (int steps, int hits) noexcept
 {
-    if (steps <= 0)
-        return {};
+    Pattern result;
+    steps = std::clamp (steps, 0, kMaxPatternSteps);
+    result.length = steps;
+
+    if (steps == 0)
+        return result;
 
     hits = std::clamp (hits, 0, steps);
 
     if (hits == 0)
-        return std::vector<bool> (static_cast<size_t> (steps), false);
+        return result;
 
     if (hits == steps)
-        return std::vector<bool> (static_cast<size_t> (steps), true);
+    {
+        std::fill_n (result.step.begin(), steps, true);
+        return result;
+    }
 
     // Classic Bjorklund bucket construction: start with `hits` groups
     // containing a single "1" and `steps - hits` groups containing a single
     // "0", then repeatedly fold the remainder groups into the front groups
-    // until at most one remainder group is left.
-    std::vector<std::vector<bool>> front;
-    std::vector<std::vector<bool>> back;
-
-    front.reserve (static_cast<size_t> (hits));
-    back.reserve (static_cast<size_t> (steps - hits));
-
-    for (int i = 0; i < hits; ++i)
-        front.push_back ({ true });
-
-    for (int i = 0; i < steps - hits; ++i)
-        back.push_back ({ false });
-
-    while (back.size() > 1)
+    // until at most one remainder group is left. Groups live in fixed arrays
+    // (at most kMaxPatternSteps groups of at most kMaxPatternSteps steps).
+    struct Group
     {
-        const size_t pairs = std::min (front.size(), back.size());
+        std::array<bool, kMaxPatternSteps> bits {};
+        int len = 0;
+    };
 
-        std::vector<std::vector<bool>> newFront;
-        newFront.reserve (pairs);
+    std::array<Group, kMaxPatternSteps> front {};
+    std::array<Group, kMaxPatternSteps> back {};
+    int numFront = hits;
+    int numBack = steps - hits;
 
-        for (size_t i = 0; i < pairs; ++i)
+    for (int i = 0; i < numFront; ++i)
+        front[static_cast<size_t> (i)] = { { true }, 1 };
+
+    for (int i = 0; i < numBack; ++i)
+        back[static_cast<size_t> (i)] = { { false }, 1 };
+
+    while (numBack > 1)
+    {
+        const int pairs = std::min (numFront, numBack);
+
+        for (int i = 0; i < pairs; ++i)
         {
-            auto combined = front[i];
-            combined.insert (combined.end(), back[i].begin(), back[i].end());
-            newFront.push_back (std::move (combined));
+            auto& f = front[static_cast<size_t> (i)];
+            const auto& b = back[static_cast<size_t> (i)];
+            std::copy_n (b.bits.begin(), b.len, f.bits.begin() + f.len);
+            f.len += b.len;
         }
 
-        std::vector<std::vector<bool>> newBack;
+        // The groups that weren't paired become the new remainder. back[0..pairs)
+        // were just folded into front, so their slots are free to overwrite.
+        if (numFront > pairs)
+        {
+            for (int i = pairs; i < numFront; ++i)
+                back[static_cast<size_t> (i - pairs)] = front[static_cast<size_t> (i)];
+            numBack = numFront - pairs;
+        }
+        else if (numBack > pairs)
+        {
+            for (int i = pairs; i < numBack; ++i)
+                back[static_cast<size_t> (i - pairs)] = back[static_cast<size_t> (i)];
+            numBack -= pairs;
+        }
+        else
+        {
+            numBack = 0;
+        }
 
-        if (front.size() > pairs)
-            newBack.assign (front.begin() + static_cast<long> (pairs), front.end());
-        else if (back.size() > pairs)
-            newBack.assign (back.begin() + static_cast<long> (pairs), back.end());
-
-        front = std::move (newFront);
-        back = std::move (newBack);
+        numFront = pairs;
     }
 
-    std::vector<bool> result;
-    result.reserve (static_cast<size_t> (steps));
-
-    for (auto& g : front)
-        result.insert (result.end(), g.begin(), g.end());
-    for (auto& g : back)
-        result.insert (result.end(), g.begin(), g.end());
+    int pos = 0;
+    for (int i = 0; i < numFront; ++i)
+    {
+        const auto& g = front[static_cast<size_t> (i)];
+        std::copy_n (g.bits.begin(), g.len, result.step.begin() + pos);
+        pos += g.len;
+    }
+    for (int i = 0; i < numBack; ++i)
+    {
+        const auto& g = back[static_cast<size_t> (i)];
+        std::copy_n (g.bits.begin(), g.len, result.step.begin() + pos);
+        pos += g.len;
+    }
 
     return result;
 }
 
-std::vector<bool> rotatePattern (const std::vector<bool>& pattern, int rotation)
+Pattern rotatePattern (const Pattern& pattern, int rotation) noexcept
 {
-    if (pattern.empty())
+    const int n = pattern.length;
+    if (n == 0)
         return pattern;
 
-    const int n = static_cast<int> (pattern.size());
     rotation = ((rotation % n) + n) % n;
 
     if (rotation == 0)
         return pattern;
 
-    std::vector<bool> result (pattern.size());
+    Pattern result;
+    result.length = n;
     for (int i = 0; i < n; ++i)
-        result[static_cast<size_t> (i)] = pattern[static_cast<size_t> ((i + rotation) % n)];
+        result.step[static_cast<size_t> (i)] = pattern.step[static_cast<size_t> ((i + rotation) % n)];
 
     return result;
 }
