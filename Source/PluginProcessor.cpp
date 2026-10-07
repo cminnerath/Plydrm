@@ -133,6 +133,11 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const int64_t blockStart = samplePosition;
     const int64_t blockEnd = blockStart + numSamples;
 
+    // Triggers come sorted by offset. The synth renders up to each one before
+    // it starts, so every hit begins on its own sample rather than at the
+    // start of the block.
+    int rendered = 0;
+
     for (const auto& trig : triggers)
     {
         const auto& info = voiceInfo[static_cast<size_t> (trig.voice)];
@@ -141,7 +146,14 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const float pitch = p.pitch->load();
 
         if (synthEnabled)
+        {
+            if (trig.sampleOffset > rendered)
+            {
+                drumSynth.renderNextBlock (buffer, rendered, trig.sampleOffset - rendered);
+                rendered = trig.sampleOffset;
+            }
             drumSynth.noteOn (trig.voice, trig.velocity * level, pitch);
+        }
 
         if (midiOutEnabled)
         {
@@ -153,6 +165,10 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             pendingNoteOffs.push_back ({ noteOffAt, info.gmNote });
         }
     }
+
+    // --- Synthesize the rest of the block -----------------------------------
+    if (synthEnabled && rendered < numSamples)
+        drumSynth.renderNextBlock (buffer, rendered, numSamples - rendered);
 
     if (midiOutEnabled)
     {
@@ -170,10 +186,6 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             }
         }
     }
-
-    // --- Synthesize audio ---------------------------------------------------
-    if (synthEnabled)
-        drumSynth.renderNextBlock (buffer, 0, numSamples);
 
     const float masterGain = masterGainParam->load();
     buffer.applyGain (masterGain);

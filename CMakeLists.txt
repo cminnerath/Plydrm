@@ -94,4 +94,17 @@ if(PLYDRM_BUILD_PLUGIN)
         PUBLIC
             juce::juce_recommended_config_flags
             juce::juce_recommended_warning_flags)
+
+    # Integration test: drives the real processor with a fake play head.
+    if(PLYDRM_BUILD_TESTS)
+        # Links the plugin's shared-code library (which already contains the
+        # compiled JUCE modules) and borrows its include paths and defines.
+        add_executable(ProcessorTests Tests/ProcessorTests.cpp)
+        target_link_libraries(ProcessorTests PRIVATE Plydrm plydrm_engine)
+        target_include_directories(ProcessorTests PRIVATE
+            $<TARGET_PROPERTY:Plydrm,INCLUDE_DIRECTORIES>)
+        target_compile_definitions(ProcessorTests PRIVATE
+            $<TARGET_PROPERTY:Plydrm,COMPILE_DEFINITIONS>)
+        add_test(NAME ProcessorTests COMMAND ProcessorTests)
+    endif()
 endif()

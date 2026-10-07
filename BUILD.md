@@ -87,6 +87,11 @@ cmake --build build --target PlydrmTests
 ctest --test-dir build -C Release --output-on-failure
 ```
 
+`ProcessorTests` (built with the plugin) drives the real processor through a
+fake host play head: it checks that each synth hit starts on its own sample
+at several block sizes, that hits land on the host's grid, and that the
+plugin is silent while the host is stopped.
+
 ## Loading Plydrm in a DAW for testing
 
 1. Build and install as above (most DAWs already scan the default VST3/AU
