@@ -132,6 +132,18 @@ int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
 
+    std::printf ("host requirements\n");
+    {
+        // Ableton Live refuses to open a VST3 instrument that has no MIDI (event) input bus:
+        // "plugin has instrument category, but no valid event input bus".
+        PlydrmAudioProcessor p;
+        check (p.acceptsMidi(), "accepts MIDI (Live needs an event input on an instrument)");
+        check (p.producesMidi(), "produces MIDI");
+    #if defined (JucePlugin_WantsMidiInput)
+        check (JucePlugin_WantsMidiInput != 0, "the plugin is built with a MIDI input (NEEDS_MIDI_INPUT)");
+    #endif
+    }
+
     std::printf ("synth hits start on their own sample\n");
     for (int blockSize : { 512, 333, 4096 })
     {

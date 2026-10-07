@@ -43,7 +43,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return "Plydrm"; }
-    bool acceptsMidi() const override { return false; }
+    bool acceptsMidi() const override { return true; }    // Live needs a MIDI input on an instrument; incoming MIDI is ignored
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 1.5; }

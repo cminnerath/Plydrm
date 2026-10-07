@@ -136,7 +136,7 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     juce::ScopedNoDenormals noDenormals;
     const int numSamples = buffer.getNumSamples();
     buffer.clear();
-    midiMessages.clear();
+    midiMessages.clear();   // incoming MIDI is ignored: this buffer carries our MIDI out
 
     // --- New Seed (posted by the message thread) ----------------------------
     if (seedRequested.exchange (false, std::memory_order_acquire))

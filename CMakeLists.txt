@@ -70,7 +70,7 @@ if(PLYDRM_BUILD_PLUGIN)
         PRODUCT_NAME              "Plydrm"
         FORMATS                   ${PLYDRM_FORMATS}
         IS_SYNTH                  TRUE
-        NEEDS_MIDI_INPUT          FALSE
+        NEEDS_MIDI_INPUT          TRUE      # Live refuses a VST3 instrument without an event input bus; incoming MIDI is ignored
         NEEDS_MIDI_OUTPUT         TRUE
         IS_MIDI_EFFECT            FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
