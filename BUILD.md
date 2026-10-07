@@ -2,20 +2,56 @@
 
 Plydrm is a CMake + JUCE project. JUCE itself is **not** vendored in this
 repo - CMake's `FetchContent` downloads a pinned JUCE release (tag
-`7.0.12`, see `JUCE_TAG` in `CMakeLists.txt`) automatically on first
-configure. This keeps the repo small and avoids a `git submodule update`
-step that's easy to forget, at the cost of a one-time download (~100 MB)
-and a working internet connection the first time you configure.
+`9.0.3`, see `CMakeLists.txt`) automatically on first configure. To use a
+JUCE checkout you already have (version 9), pass
+`-DPLYDRM_JUCE_PATH=/path/to/JUCE` on the first configure, or set the
+`PLYDRM_JUCE_PATH` environment variable for `build.sh`.
 
 ## Prerequisites
 
-- CMake >= 3.22
-- A C++17 compiler:
+- CMake >= 3.22 (JUCE 9 needs it)
+- A C++20 compiler:
   - **Windows**: Visual Studio 2022 (Desktop development with C++ workload)
-  - **macOS**: Xcode 14+ and the command line tools (`xcode-select --install`)
+  - **macOS**: Xcode 15+ and the command line tools (`xcode-select --install`)
 - Git (used by FetchContent to clone JUCE)
+- **macOS**: Ninja for `build.sh` (`brew install cmake ninja`)
 
-## Windows (VST3)
+## macOS (VST3 + AU + Standalone): `build.sh`
+
+```bash
+./build.sh            # configure (if needed), build Release, run the tests
+./build.sh build      # build only
+./build.sh test       # run the tests only
+./build.sh install    # build, then copy the VST3 and AU to your plug-in folders
+./build.sh run        # build, then start the standalone app - no DAW needed
+./build.sh clean      # delete the build folder
+```
+
+If `build.sh` says your cmake is too old, an older cmake is earlier on your
+`PATH` than Homebrew's (for example `/usr/local/bin/cmake`); put
+`/opt/homebrew/bin` first or remove the old one.
+
+`install` copies the plugins to:
+
+```
+~/Library/Audio/Plug-Ins/VST3/Plydrm.vst3
+~/Library/Audio/Plug-Ins/Components/Plydrm.component
+```
+
+and signs them again (ad hoc). JUCE adds a file to the VST3 after signing it,
+so a freshly built bundle can be refused by Ableton Live until it is re-signed.
+Set `VST3_DIR` / `AU_DIR` to install somewhere else. The build itself never
+copies anything (`COPY_PLUGIN_AFTER_BUILD` is off).
+
+To check the AU after installing:
+
+```bash
+auval -v aumu Pld1 Plyd
+```
+
+(`Pld1` / `Plyd` are the plugin/manufacturer codes set in `CMakeLists.txt`.)
+
+## Windows (VST3 + Standalone)
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -31,88 +67,100 @@ The build produces:
 build\Plydrm_artefacts\Release\VST3\Plydrm.vst3
 ```
 
-`COPY_PLUGIN_AFTER_BUILD` is deliberately **off** by default: JUCE's
-default install location on Windows is
-`C:\Program Files\Common Files\VST3`, which a normal (non-admin) build
-can't write to, and would otherwise make every build fail with a
-"permission denied" error. To get Plydrm into your DAW's scan path, either:
+To get Plydrm into your DAW's scan path, either:
 
 - Copy the `.vst3` folder above into
-  `C:\Program Files\Common Files\VST3\` yourself (one-time, needs admin), or
+  `C:\Program Files\Common Files\VST3\` yourself (needs admin), or
 - Point your DAW's custom VST3 scan path directly at
-  `build\Plydrm_artefacts\Release\VST3\`, or
-- Set `COPY_PLUGIN_AFTER_BUILD TRUE` in `CMakeLists.txt` and build from an
-  elevated/admin shell to have CMake copy it for you on every build.
-
-## macOS (VST3 + AU)
-
-```bash
-cmake -S . -B build -G Xcode
-cmake --build build --config Release --target Plydrm_VST3
-cmake --build build --config Release --target Plydrm_AU
-```
-
-(Or open `build/Plydrm.xcodeproj` in Xcode and build the `Plydrm_VST3` /
-`Plydrm_AU` schemes directly.)
-
-Built plugins are copied automatically to:
-
-```
-~/Library/Audio/Plug-Ins/VST3/Plydrm.vst3
-~/Library/Audio/Plug-Ins/Components/Plydrm.component
-```
-
-For AU you may need to re-run `auval -a` or restart your DAW's AU cache
-the first time so it's recognized:
-
-```bash
-auval -v aumu Pld1 Plyd
-```
-
-(`Pld1` / `Plyd` are the plugin/manufacturer codes set in `CMakeLists.txt`.)
+  `build\Plydrm_artefacts\Release\VST3\`.
 
 ## Running the pattern-engine unit tests
 
-The Euclidean/polymeter/probability logic lives in plain C++ classes
-(`Source/Engine/Euclidean.*`, `Source/Engine/PatternEngine.*`) with no
-audio-callback or GUI dependencies, so it's covered by a small standalone
-test executable (`PlydrmTests`, built alongside the plugin by default -
-set `-DPLYDRM_BUILD_TESTS=OFF` to skip it):
+Everything that decides when a drum hits and how it sounds
+(`Source/Engine/*`: the Euclidean patterns, the transport clock and the step
+scheduler; `Source/Synth/*`: the drum synth and the output stage) is plain
+C++ with no JUCE, built as the `plydrm_engine` library. `PlydrmTests` tests
+it without a host and builds without JUCE at all (`-DPLYDRM_BUILD_PLUGIN=OFF`
+skips the plugin):
 
 ```bash
-cmake --build build --config Release --target PlydrmTests
+cmake --build build --target PlydrmTests
 ctest --test-dir build -C Release --output-on-failure
+```
+
+`ProcessorTests` (built with the plugin) drives the real processor through a
+fake host play head. It checks that:
+
+- each synth hit starts on its own sample at several block sizes
+- hits land on the host's grid, and the plugin is silent while the host is
+  stopped
+- `processBlock` never allocates (it counts `operator new` around it, while
+  parameters, block sizes, tempo and transport change)
+- every MIDI note-on gets its note-off, even when MIDI Out is switched off or
+  the host calls `prepareToPlay` while a note is on
+- pressing New Seed from another thread while audio runs is safe
+
+`SoakTests` (ported from Brimstone) fuzzes the whole audio path: random
+parameter changes, Evolve, New Seed, tempo changes and ramps, transport
+stops / starts / jumps / loops, missing host fields and play heads, odd time
+signatures and re-prepare, at five sample rates, block sizes 1-4096, mono
+and stereo. The output must stay finite and bounded, MIDI well formed with
+no hanging notes, and `processBlock` must never allocate. It also renders the
+same sessions with different block layouts and requires bit-identical audio
+and MIDI (an offline export sounds exactly like the realtime session), and
+prints the cost per sample of a few patches. `ctest` runs a quick version;
+for the long one:
+
+```bash
+./build/SoakTests full
+```
+
+`EditorTests` builds the real editor without a window and checks its layout
+(every control inside the window, none overlapping) and the pattern view.
+`./build/EditorTests editor.png` also saves a snapshot of the editor.
+
+To check `ProcessorTests`' New Seed test for data races, build it with
+ThreadSanitizer:
+
+```bash
+cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_CXX_FLAGS=-fsanitize=thread -DCMAKE_C_FLAGS=-fsanitize=thread \
+    -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+cmake --build build-tsan --target ProcessorTests
+./build-tsan/ProcessorTests
 ```
 
 ## Loading Plydrm in a DAW for testing
 
-1. Build the `Plydrm_VST3` (and `Plydrm_AU` on macOS) target as above.
-2. Point your DAW at the install folder above (most DAWs already scan the
-   default VST3/AU locations; Reaper/Ableton/Bitwig/Cubase all do by
-   default on both platforms).
-3. Rescan plugins if your DAW caches its plugin list.
-4. Create a new MIDI/instrument track and insert "Plydrm" as an
-   instrument (it's registered as a synth, `IS_SYNTH TRUE`, since it can
-   generate its own audio).
-5. Press play in the DAW - Plydrm free-runs even with no incoming MIDI; it
-   reads the host's tempo via `juce::AudioPlayHead`, or falls back to an
-   internal 120 BPM clock when the host isn't reporting a tempo (e.g. a
-   bare audio-only test host).
-6. Toggle **MIDI Out** on and arm a second instrument track pointed at
+1. Build and install as above (most DAWs already scan the default VST3/AU
+   folders), and rescan plug-ins if your DAW caches its list.
+2. Create a new MIDI/instrument track and insert "Plydrm" as an
+   instrument (it's registered as a synth, `IS_SYNTH TRUE`, since it
+   generates its own audio).
+3. Press play. Plydrm follows the host transport: step 0 is the start of
+   the song, so the pattern lines up with bars and comes out the same
+   wherever you start playback. While the host is stopped it is silent.
+   With no host transport at all (the standalone app) it free-runs at the
+   host's tempo, or 120 BPM.
+4. Toggle **MIDI Out** on and arm a second instrument track pointed at
    Plydrm's MIDI output (route it the way your DAW routes inter-track
    MIDI, e.g. Ableton's "MIDI From" dropdown) to drive an external drum
    sampler/VST with the generated pattern, independently of (or alongside)
-   the internal synth engine.
-7. Use **Evolve / Mutate** to nudge hits/rotation/probability/swing over
-   time, and **New Seed** to re-roll the probability/humanize/synth
-   randomization without changing the Euclidean pattern shape itself.
+   the internal synth engine. Logic does not take MIDI output from an AU
+   instrument.
+5. Use **Evolve / Mutate** to nudge hits/rotation/probability/swing, or set
+   **Auto** to do it every 1-16 bars. **New Seed** re-rolls the
+   probability/humanize/velocity/synth randomization without changing the
+   Euclidean pattern shape itself; the seed is saved with the session, so
+   a session plays back (and bounces) exactly the same every time.
 
 ## Notes on the CMake structure
 
+- `plydrm_engine` (static library, no JUCE) holds `Source/Engine/*` and
+  `Source/Synth/*`. The plugin and every test executable link it.
 - `juce_add_plugin(Plydrm ...)` declares the plugin target; `FORMATS` is
-  `VST3` on Windows and `VST3;AU` on macOS (set conditionally near the top
-  of `CMakeLists.txt`).
-- `PlydrmTests` is a second, independent executable that links only
-  `juce_core` plus the two plain-C++ engine source files - it does not
-  link JUCE's audio/GUI modules, so it builds fast and can run in CI
-  without any audio hardware.
+  `VST3` + `Standalone` on Windows, plus `AU` on macOS, and `VST3` only on
+  Linux.
+- `-ffp-contract=off` is set for every target (JUCE included) so Clang on
+  Apple Silicon does the same floating-point arithmetic as MSVC, and step
+  timing matches across platforms.

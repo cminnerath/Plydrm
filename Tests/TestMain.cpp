@@ -9,11 +9,13 @@ int plydrmTestsFailed = 0;
 
 void runEuclideanTests();
 void runPatternEngineTests();
+void runSynthTests();
 
 int main()
 {
     runEuclideanTests();
     runPatternEngineTests();
+    runSynthTests();
 
     if (plydrmTestsFailed == 0)
     {
