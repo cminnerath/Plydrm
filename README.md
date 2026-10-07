@@ -2,7 +2,7 @@
 
 An automatic polyrhythm / Euclidean drum pattern generator plugin (VST3 /
 AU) - think "auto Aphex Twin" for drum beats. Plydrm continuously generates
-evolving Euclidean/polymetric drum patterns synced to your host's tempo and
+evolving Euclidean/polymetric drum patterns locked to your host's tempo and timeline, and
 can drive the pattern out as **MIDI** (to an external drum sampler/VST),
 through a **built-in synthesized drum voice engine** (kick/snare/hat/perc,
 pure synthesis - no samples), or both at once.
@@ -31,13 +31,15 @@ See [`BUILD.md`](BUILD.md) for build and DAW-loading instructions.
 ## Project layout
 
 ```
-CMakeLists.txt              Top-level build (JUCE via FetchContent)
+CMakeLists.txt              Top-level build (JUCE 9 via FetchContent)
+build.sh                    macOS build / test / install script
 Source/
   Params.h                  Parameter IDs, voice table, APVTS layout
   PluginProcessor.*          AudioProcessor: engine <-> MIDI/audio glue
   PluginEditor.*              Plain JUCE GUI (knobs + toggles)
   Engine/
     Euclidean.*               Bjorklund's algorithm (pure C++, unit tested)
+    TransportClock.h          Host position -> musical clock (ported from Brimstone)
     PatternEngine.*           Sample-accurate polymetric trigger scheduler
   Synth/
     DrumSynth.*               Kick/snare/hat/perc synthesis voices

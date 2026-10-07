@@ -5,6 +5,27 @@
 namespace plydrm
 {
 
+namespace
+{
+    // Floor division and modulo that stay correct for negative step indices
+    // (hosts report negative PPQ during pre-roll / count-in).
+    int64_t floorDiv (int64_t a, int64_t b) noexcept
+    {
+        const int64_t q = a / b;
+        return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+    }
+
+    int64_t positiveMod (int64_t a, int64_t b) noexcept
+    {
+        const int64_t m = a % b;
+        return m < 0 ? m + b : m;
+    }
+
+    // Tolerance for "is this step inside the block": steps exactly on a block
+    // edge (give or take float error) belong to the block that starts there.
+    constexpr double kPpqEpsilon = 1.0e-9;
+}
+
 PatternEngine::PatternEngine()
 {
     for (int i = 0; i < numVoices; ++i)
@@ -14,30 +35,22 @@ PatternEngine::PatternEngine()
 void PatternEngine::prepareToPlay (double newSampleRate)
 {
     sampleRate = newSampleRate > 0.0 ? newSampleRate : 44100.0;
-    setTempo (bpm, stepLengthQuarterNotes);
+    pending.reserve (256);
     resetPosition();
 }
 
 void PatternEngine::resetPosition()
 {
+    clock.prepare (sampleRate);
+    wasFollowingHost = false;
+    hasLastStep = false;
     totalSamplesElapsed = 0;
-    globalStepCounter = 0;
-    nextStepBoundary = samplesPerStep;
     pending.clear();
-    for (auto& v : voices)
-        v.loopRepeatCount = 0;
 }
 
-void PatternEngine::setTempo (double bpmIn, double quarterNoteStepLength)
+void PatternEngine::setStepLength (double quarterNotes)
 {
-    bpm = bpmIn > 1.0 ? bpmIn : 120.0;
-    stepLengthQuarterNotes = quarterNoteStepLength > 0.0 ? quarterNoteStepLength : 0.25;
-
-    const double samplesPerQuarterNote = sampleRate * 60.0 / bpm;
-    samplesPerStep = samplesPerQuarterNote * stepLengthQuarterNotes;
-
-    if (samplesPerStep < 1.0)
-        samplesPerStep = 1.0;
+    stepLengthQuarterNotes = quarterNotes > 0.0 ? quarterNotes : 0.25;
 }
 
 void PatternEngine::setVoiceParams (VoiceId voice, const VoiceParams& params)
@@ -73,7 +86,7 @@ const std::vector<bool>& PatternEngine::getPatternForVoice (VoiceId voice) const
     return voices[static_cast<size_t> (voice)].pattern;
 }
 
-void PatternEngine::handleStepBoundary (int64_t stepIndex, int64_t boundarySample)
+void PatternEngine::handleStep (int64_t stepIndex, int64_t stepSample, int64_t blockStart, double samplesPerStep)
 {
     for (int vi = 0; vi < numVoices; ++vi)
     {
@@ -81,24 +94,25 @@ void PatternEngine::handleStepBoundary (int64_t stepIndex, int64_t boundarySampl
         if (! v.params.enabled || v.pattern.empty())
             continue;
 
-        const int steps = static_cast<int> (v.pattern.size());
-        const int localStep = static_cast<int> (stepIndex % steps);
-        const int64_t loopRepeat = stepIndex / steps;
-        v.loopRepeatCount = loopRepeat;
+        const int64_t steps = static_cast<int64_t> (v.pattern.size());
+        const int64_t localStep = positiveMod (stepIndex, steps);
+        const int64_t loopRepeat = floorDiv (stepIndex, steps);
 
         if (! v.pattern[static_cast<size_t> (localStep)])
             continue;
 
-        const int everyN = std::max (1, v.params.everyN);
-        if (loopRepeat % everyN != 0)
+        const int64_t everyN = std::max (1, v.params.everyN);
+        if (positiveMod (loopRepeat, everyN) != 0)
             continue;
 
         std::uniform_real_distribution<float> pct (0.0f, 100.0f);
         if (pct (v.rng) > v.params.probabilityPercent)
             continue;
 
+        // Swing follows the shared clock, not the voice's own loop, so every
+        // voice swings the same off-beats whatever its length.
         double delaySamples = 0.0;
-        if ((localStep % 2) == 1 && v.params.swingPercent > 0.0f)
+        if (positiveMod (stepIndex, 2) == 1 && v.params.swingPercent > 0.0f)
             delaySamples = samplesPerStep * (static_cast<double> (v.params.swingPercent) / 100.0) * 0.5;
 
         double jitterSamples = 0.0;
@@ -108,8 +122,8 @@ void PatternEngine::handleStepBoundary (int64_t stepIndex, int64_t boundarySampl
             jitterSamples = static_cast<double> (jit (v.rng)) / 1000.0 * sampleRate;
         }
 
-        int64_t fireSample = boundarySample + static_cast<int64_t> (std::llround (delaySamples + jitterSamples));
-        fireSample = std::max<int64_t> (fireSample, 0);
+        int64_t fireSample = stepSample + static_cast<int64_t> (std::llround (delaySamples + jitterSamples));
+        fireSample = std::max (fireSample, blockStart);
 
         std::uniform_real_distribution<float> velRange (0.75f, 1.0f);
         pending.push_back ({ fireSample, static_cast<VoiceId> (vi), velRange (v.rng) });
@@ -136,10 +150,26 @@ void PatternEngine::flushPending (int64_t blockStart, int64_t blockEnd, std::vec
     }
 }
 
-void PatternEngine::process (int numSamples, std::vector<TriggerEvent>& outTriggers)
+void PatternEngine::process (const HostTimeInfo& host, int numSamples, std::vector<TriggerEvent>& outTriggers)
 {
     if (numSamples <= 0)
         return;
+
+    clock.beginBlock (host, numSamples);
+
+    // The host has a transport and it is stopped: stay silent. (With no
+    // position at all, e.g. standalone, the clock free-runs instead.)
+    const bool hostStopped = host.hasPpq && ! host.isPlaying;
+
+    // Playback started, stopped, or the playhead moved: anything scheduled
+    // belongs to the old position, and step history no longer applies.
+    const bool following = clock.isFollowingHost();
+    if (hostStopped || clock.jumpedThisBlock() || following != wasFollowingHost)
+    {
+        pending.clear();
+        hasLastStep = false;
+    }
+    wasFollowingHost = following;
 
     const int64_t blockStart = totalSamplesElapsed;
     const int64_t blockEnd = blockStart + numSamples;
@@ -147,14 +177,32 @@ void PatternEngine::process (int numSamples, std::vector<TriggerEvent>& outTrigg
     // Emit any events scheduled by previous blocks that land in this one.
     flushPending (blockStart, blockEnd, outTriggers);
 
-    // Step the shared clock forward, generating new trigger candidates for
-    // every step boundary that falls within this block.
-    while (nextStepBoundary < static_cast<double> (blockEnd))
+    if (! hostStopped)
     {
-        const int64_t boundarySample = static_cast<int64_t> (std::llround (nextStepBoundary));
-        handleStepBoundary (globalStepCounter, boundarySample);
-        ++globalStepCounter;
-        nextStepBoundary += samplesPerStep;
+        const double startPpq = clock.ppqAt (0);
+        const double endPpq = clock.ppqAt (numSamples);
+        const double ppqPerSample = clock.getPpqPerSample();
+        const double stepLen = stepLengthQuarterNotes;
+        const double samplesPerStep = stepLen / ppqPerSample;
+
+        // Step k sits at PPQ k * stepLen. Take every step in [startPpq, endPpq).
+        for (auto k = static_cast<int64_t> (std::ceil (startPpq / stepLen - kPpqEpsilon)); ; ++k)
+        {
+            const double stepPpq = static_cast<double> (k) * stepLen;
+            if (stepPpq >= endPpq - kPpqEpsilon)
+                break;
+
+            // A step a few ULPs before a block edge can be seen by both blocks.
+            if (hasLastStep && stepPpq <= lastStepPpq + kPpqEpsilon)
+                continue;
+
+            const double offset = std::max (0.0, (stepPpq - startPpq) / ppqPerSample);
+            const int64_t stepSample = std::min (blockEnd - 1, blockStart + static_cast<int64_t> (std::llround (offset)));
+            handleStep (k, stepSample, blockStart, samplesPerStep);
+
+            lastStepPpq = stepPpq;
+            hasLastStep = true;
+        }
     }
 
     totalSamplesElapsed = blockEnd;

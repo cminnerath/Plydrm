@@ -11,10 +11,10 @@ namespace
 }
 
 PlydrmAudioProcessorEditor::PlydrmAudioProcessorEditor (PlydrmAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p)
+    : AudioProcessorEditor (&p), plydrmProcessor (p)
 {
     titleLabel.setText ("Plydrm - Euclidean / Polyrhythm Drum Generator", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (20.0f, juce::Font::bold));
+    titleLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
     titleLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (titleLabel);
 
@@ -31,17 +31,17 @@ PlydrmAudioProcessorEditor::PlydrmAudioProcessorEditor (PlydrmAudioProcessor& p)
     stepDivisionBox.addItemList (juce::StringArray (stepDivisionChoices.data(), (int) stepDivisionChoices.size()), 1);
     addAndMakeVisible (stepDivisionBox);
     stepDivisionAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
-        processor.apvts, ParamIDs::stepDivision, stepDivisionBox);
+        plydrmProcessor.apvts, ParamIDs::stepDivision, stepDivisionBox);
 
     addAndMakeVisible (midiOutToggle);
     addAndMakeVisible (synthToggle);
     midiOutAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        processor.apvts, ParamIDs::midiOutEnabled, midiOutToggle);
+        plydrmProcessor.apvts, ParamIDs::midiOutEnabled, midiOutToggle);
     synthAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        processor.apvts, ParamIDs::synthEnabled, synthToggle);
+        plydrmProcessor.apvts, ParamIDs::synthEnabled, synthToggle);
 
-    evolveButton.onClick = [this] { processor.evolvePatterns(); };
-    randomizeSeedButton.onClick = [this] { processor.randomizeSeed(); };
+    evolveButton.onClick = [this] { plydrmProcessor.evolvePatterns(); };
+    randomizeSeedButton.onClick = [this] { plydrmProcessor.randomizeSeed(); };
     addAndMakeVisible (evolveButton);
     addAndMakeVisible (randomizeSeedButton);
 
@@ -58,14 +58,14 @@ void PlydrmAudioProcessorEditor::setupKnob (KnobControl& knob, const juce::Strin
 {
     knob.caption.setText (captionText, juce::dontSendNotification);
     knob.caption.setJustificationType (juce::Justification::centred);
-    knob.caption.setFont (juce::Font (12.0f));
+    knob.caption.setFont (juce::FontOptions (12.0f));
     addAndMakeVisible (knob.caption);
 
     knob.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, columnWidth - 10, 16);
     addAndMakeVisible (knob.slider);
 
     knob.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        processor.apvts, paramID, knob.slider);
+        plydrmProcessor.apvts, paramID, knob.slider);
 }
 
 void PlydrmAudioProcessorEditor::setupVoice (int voiceIndex)
@@ -75,12 +75,12 @@ void PlydrmAudioProcessorEditor::setupVoice (int voiceIndex)
 
     v.title.setText (info.displayName, juce::dontSendNotification);
     v.title.setJustificationType (juce::Justification::centred);
-    v.title.setFont (juce::Font (14.0f, juce::Font::bold));
+    v.title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     addAndMakeVisible (v.title);
 
     addAndMakeVisible (v.enabled);
     v.enabledAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        processor.apvts, ParamIDs::voiceParam (info, "enabled"), v.enabled);
+        plydrmProcessor.apvts, ParamIDs::voiceParam (info, "enabled"), v.enabled);
 
     setupKnob (v.steps, "Steps", ParamIDs::voiceParam (info, "steps"));
     setupKnob (v.hits, "Hits", ParamIDs::voiceParam (info, "hits"));
@@ -151,7 +151,7 @@ void PlydrmAudioProcessorEditor::resized()
 
 void PlydrmAudioProcessorEditor::timerCallback()
 {
-    if (auto* playHead = processor.getPlayHead())
+    if (auto* playHead = plydrmProcessor.getPlayHead())
     {
         if (auto position = playHead->getPosition())
         {

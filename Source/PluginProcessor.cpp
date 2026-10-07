@@ -70,7 +70,7 @@ VoiceParams PlydrmAudioProcessor::readVoiceParams (int voiceIndex, float density
     vp.steps = juce::jlimit (1, 32, static_cast<int> (std::lround (p.steps->load())));
 
     const int baseHits = static_cast<int> (std::lround (p.hits->load()));
-    vp.hits = juce::jlimit (0, vp.steps, static_cast<int> (std::lround (baseHits * densityFactor)));
+    vp.hits = juce::jlimit (0, vp.steps, static_cast<int> (std::lround (static_cast<float> (baseHits) * densityFactor)));
 
     vp.rotation = static_cast<int> (std::lround (p.rotation->load()));
     vp.probabilityPercent = p.probability->load();
@@ -80,6 +80,31 @@ VoiceParams PlydrmAudioProcessor::readVoiceParams (int voiceIndex, float density
     return vp;
 }
 
+HostTimeInfo PlydrmAudioProcessor::readHostTime() const
+{
+    HostTimeInfo h;
+
+    auto* ph = getPlayHead();
+    if (ph == nullptr)
+        return h;
+
+    const auto pos = ph->getPosition();
+    if (! pos.hasValue())
+        return h;
+
+    if (const auto bpm = pos->getBpm())                         { h.hasBpm = true; h.bpm = *bpm; }
+    if (const auto ppq = pos->getPpqPosition())                 { h.hasPpq = true; h.ppq = *ppq; }
+    if (const auto bar = pos->getPpqPositionOfLastBarStart())   { h.hasBarStart = true; h.barStartPpq = *bar; }
+    if (const auto sig = pos->getTimeSignature())
+    {
+        h.hasTimeSig = true;
+        h.timeSigNum = sig->numerator;
+        h.timeSigDen = sig->denominator;
+    }
+    h.isPlaying = pos->getIsPlaying();
+    return h;
+}
+
 void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -87,18 +112,10 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     buffer.clear();
     midiMessages.clear();
 
-    // --- Tempo sync -------------------------------------------------------
-    double bpm = 120.0;
-    if (auto* ph = getPlayHead())
-    {
-        if (auto position = ph->getPosition())
-            if (auto bpmOpt = position->getBpm())
-                bpm = *bpmOpt > 1.0 ? *bpmOpt : 120.0;
-    }
-
+    // --- Host transport ---------------------------------------------------
     const int divisionIndex = juce::jlimit (0, (int) stepDivisionQuarterLength.size() - 1,
                                              static_cast<int> (std::lround (stepDivisionParam->load())));
-    patternEngine.setTempo (bpm, stepDivisionQuarterLength[static_cast<size_t> (divisionIndex)]);
+    patternEngine.setStepLength (stepDivisionQuarterLength[static_cast<size_t> (divisionIndex)]);
 
     // --- Pull latest parameter values into the engine ----------------------
     const float density = densityParam->load();
@@ -109,13 +126,12 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // --- Generate this block's triggers -------------------------------------
     std::vector<TriggerEvent> triggers;
-    patternEngine.process (numSamples, triggers);
+    patternEngine.process (readHostTime(), numSamples, triggers);
 
     const bool midiOutEnabled = midiOutEnabledParam->load() > 0.5f;
     const bool synthEnabled = synthEnabledParam->load() > 0.5f;
     const int64_t blockStart = samplePosition;
     const int64_t blockEnd = blockStart + numSamples;
-    constexpr int64_t noteOffDelaySamplesDefault = 0; // computed per-sample-rate below
 
     for (const auto& trig : triggers)
     {
@@ -137,7 +153,6 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             pendingNoteOffs.push_back ({ noteOffAt, info.gmNote });
         }
     }
-    juce::ignoreUnused (noteOffDelaySamplesDefault);
 
     if (midiOutEnabled)
     {

@@ -37,7 +37,7 @@ public:
     void resized() override;
 
 private:
-    PlydrmAudioProcessor& processor;
+    PlydrmAudioProcessor& plydrmProcessor;
 
     juce::Label titleLabel;
     juce::Label tempoLabel;

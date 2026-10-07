@@ -96,6 +96,7 @@ void DrumSynth::noteOn (VoiceId voice, float velocity, float pitchSemitones)
             break;
         }
         case VoiceId::Perc:
+        case VoiceId::Count:
         default:
         {
             hit->kind = Kind::Perc;

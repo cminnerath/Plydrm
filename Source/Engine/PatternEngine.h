@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Euclidean.h"
+#include "TransportClock.h"
 #include "VoiceTypes.h"
 #include <array>
 #include <vector>
@@ -35,9 +36,16 @@ struct TriggerEvent
 };
 
 /** Sample-accurate, tempo-synced Euclidean/polymeter pattern generator.
-    This class is intentionally free of juce_audio_processors / audio-thread
-    JUCE dependencies (beyond juce_core for Random) so it can be driven and
-    unit tested outside of a real plugin host. */
+
+    Step k sits at PPQ position k * stepLength, so the pattern is locked to
+    the host's timeline: step 0 is the start of the song, every voice's loop
+    position follows from k, and starting playback anywhere gives the same
+    hits as playing through to that point. While the host transport is
+    stopped nothing is generated; with no host position at all (standalone)
+    the clock free-runs from 0.
+
+    Plain C++ (no JUCE), so it can be driven and unit tested outside of a
+    real plugin host. */
 class PatternEngine
 {
 public:
@@ -49,27 +57,27 @@ public:
         values for one voice. */
     void setVoiceParams (VoiceId voice, const VoiceParams& params);
 
-    /** Updates the shared tempo clock. quarterNoteStepLength is the step
-        length expressed as a fraction of a quarter note (e.g. 0.25 = 1/16). */
-    void setTempo (double bpmIn, double quarterNoteStepLength);
+    /** Step length as a fraction of a quarter note (e.g. 0.25 = 1/16). */
+    void setStepLength (double quarterNotes);
 
-    /** Advances the clock by numSamples and appends any triggers that fall
-        within this block to outTriggers (sampleOffset is relative to the
-        start of this block). Safe to call with outTriggers non-empty; new
-        events are appended. */
-    void process (int numSamples, std::vector<TriggerEvent>& outTriggers);
+    /** Advances the clock by numSamples using what the host reported for
+        this block, and appends any triggers that fall within the block to
+        outTriggers (sampleOffset is relative to the start of this block). */
+    void process (const HostTimeInfo& host, int numSamples, std::vector<TriggerEvent>& outTriggers);
 
     /** Re-seeds the per-voice RNGs used for probability rolls and
         micro-timing humanization. */
     void reseed (uint32_t newSeed);
 
-    /** Resets playback position (e.g. on host transport restart) without
+    /** Forgets the playback position and anything scheduled, without
         touching cached patterns or RNG state. */
     void resetPosition();
 
     /** Returns the cached Euclidean pattern currently in use for a voice,
         mainly for GUI visualisation and unit tests. */
     const std::vector<bool>& getPatternForVoice (VoiceId voice) const;
+
+    double getBpm() const noexcept { return clock.getBpm(); }
 
 private:
     struct VoiceRuntime
@@ -79,7 +87,6 @@ private:
         int cachedSteps = -1;
         int cachedHits = -1;
         int cachedRotation = -1;
-        int64_t loopRepeatCount = 0;
         std::mt19937 rng { std::random_device {}() };
     };
 
@@ -91,18 +98,18 @@ private:
     };
 
     double sampleRate = 44100.0;
-    double bpm = 120.0;
     double stepLengthQuarterNotes = 0.25;
-    double samplesPerStep = 44100.0 * 0.5; // recomputed in setTempo
-    double nextStepBoundary = 0.0;         // absolute sample position (double, for sub-sample accuracy)
+    TransportClock clock;
+    bool wasFollowingHost = false;
+    double lastStepPpq = 0.0;              // PPQ of the last step handled, so no step fires twice
+    bool hasLastStep = false;
     int64_t totalSamplesElapsed = 0;
-    int64_t globalStepCounter = 0;
 
     std::array<VoiceRuntime, numVoices> voices;
     std::vector<PendingEvent> pending;
 
     void regeneratePatternIfNeeded (VoiceRuntime& v);
-    void handleStepBoundary (int64_t stepIndex, int64_t boundarySample);
+    void handleStep (int64_t stepIndex, int64_t stepSample, int64_t blockStart, double samplesPerStep);
     void flushPending (int64_t blockStart, int64_t blockEnd, std::vector<TriggerEvent>& outTriggers);
 };
 
