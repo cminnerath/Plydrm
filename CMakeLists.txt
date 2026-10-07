@@ -17,12 +17,13 @@ if(NOT MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# Pattern engine: plain C++, no JUCE. Everything that decides when a drum hits
-# lives here so it can be unit-tested without a host.
+# Engine: plain C++, no JUCE. The pattern engine (when a drum hits), the drum
+# synth and the output stage live here so they can be unit-tested without a host.
 # ---------------------------------------------------------------------------
 add_library(plydrm_engine STATIC
     Source/Engine/Euclidean.cpp
-    Source/Engine/PatternEngine.cpp)
+    Source/Engine/PatternEngine.cpp
+    Source/Synth/DrumSynth.cpp)
 target_include_directories(plydrm_engine PUBLIC Source)
 
 if(PLYDRM_BUILD_TESTS)
@@ -30,7 +31,8 @@ if(PLYDRM_BUILD_TESTS)
     add_executable(PlydrmTests
         Tests/TestMain.cpp
         Tests/EuclideanTests.cpp
-        Tests/PatternEngineTests.cpp)
+        Tests/PatternEngineTests.cpp
+        Tests/SynthTests.cpp)
     target_link_libraries(PlydrmTests PRIVATE plydrm_engine)
     add_test(NAME PlydrmTests COMMAND PlydrmTests)
 endif()
@@ -79,7 +81,7 @@ if(PLYDRM_BUILD_PLUGIN)
     target_sources(Plydrm PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
-        Source/Synth/DrumSynth.cpp)
+        Source/PatternView.cpp)
 
     target_compile_definitions(Plydrm PUBLIC
         JUCE_WEB_BROWSER=0
@@ -99,9 +101,9 @@ if(PLYDRM_BUILD_PLUGIN)
     if(PLYDRM_BUILD_TESTS)
         # Links the plugin's shared-code library (which already contains the
         # compiled JUCE modules) and borrows its include paths and defines.
-        # ProcessorTests: targeted checks of the JUCE glue. SoakTests: fuzz, block-layout determinism and cost
+        # ProcessorTests: targeted checks of the JUCE glue. SoakTests: fuzz, block-layout determinism and cost. EditorTests: layout
         # (`SoakTests full` is the long version).
-        foreach(test_name ProcessorTests SoakTests)
+        foreach(test_name ProcessorTests SoakTests EditorTests)
             add_executable(${test_name} Tests/${test_name}.cpp)
             target_link_libraries(${test_name} PRIVATE Plydrm plydrm_engine)
             target_include_directories(${test_name} PRIVATE

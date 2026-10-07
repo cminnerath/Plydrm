@@ -3,6 +3,7 @@
 #include "Params.h"
 #include "Engine/PatternEngine.h"
 #include "Synth/DrumSynth.h"
+#include "Synth/OutputStage.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
 #include <vector>
@@ -23,6 +24,7 @@ struct VoiceParamPointers
     std::atomic<float>* humanizeMs = nullptr;
     std::atomic<float>* level = nullptr;
     std::atomic<float>* pitch = nullptr;
+    std::atomic<float>* drive = nullptr;
 };
 
 class PlydrmAudioProcessor final : public juce::AudioProcessor
@@ -76,6 +78,17 @@ public:
     bool hostReportsTempo() const noexcept    { return displayHasHostTempo.load (std::memory_order_relaxed); }
     bool hostIsPlaying() const noexcept       { return displayPlaying.load (std::memory_order_relaxed); }
 
+    /** The pattern each voice is playing, the shared step and how many hits
+        each voice has played, published by the audio thread for the pattern
+        view. Safe from any thread. */
+    Pattern getDisplayPattern (VoiceId voice) const noexcept;
+    int64_t getDisplayStep() const noexcept   { return displayStep.load (std::memory_order_relaxed); }
+    bool isClockRunning() const noexcept      { return displayRunning.load (std::memory_order_relaxed); }
+    uint32_t getHitCount (VoiceId voice) const noexcept
+    {
+        return displayHitCounts[static_cast<size_t> (voice)].load (std::memory_order_relaxed);
+    }
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -85,9 +98,12 @@ private:
     std::atomic<float>* midiOutEnabledParam = nullptr;
     std::atomic<float>* synthEnabledParam = nullptr;
     std::atomic<float>* masterGainParam = nullptr;
+    std::atomic<float>* driveTypeParam = nullptr;
+    std::atomic<float>* limiterParam = nullptr;
 
     PatternEngine patternEngine;
     DrumSynth drumSynth;
+    OutputStage outputStage;
 
     // Reused every block; reserved up front so the audio thread never grows it.
     std::vector<TriggerEvent> triggers;
@@ -113,6 +129,14 @@ private:
     std::atomic<double> displayBpm { 120.0 };
     std::atomic<bool> displayHasHostTempo { false };
     std::atomic<bool> displayPlaying { false };
+
+    // Pattern view state (see getDisplayPattern). A pattern is packed into one
+    // word: step bits in the low 32, the length above them.
+    static_assert (kMaxPatternSteps <= 32);
+    std::array<std::atomic<uint64_t>, numVoices> displayPatterns {};
+    std::array<std::atomic<uint32_t>, numVoices> displayHitCounts {};
+    std::atomic<int64_t> displayStep { 0 };
+    std::atomic<bool> displayRunning { false };
 
     juce::Random mutationRandom;
 

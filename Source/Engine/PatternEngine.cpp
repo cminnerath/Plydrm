@@ -170,6 +170,8 @@ void PatternEngine::process (const HostTimeInfo& host, int numSamples, std::vect
     // The host has a transport and it is stopped: stay silent. (With no
     // position at all, e.g. standalone, the clock free-runs instead.)
     const bool hostStopped = host.hasPpq && ! host.isPlaying;
+    running = ! hostStopped;
+    currentStep = static_cast<int64_t> (std::floor (clock.ppqAt (0) / stepLengthQuarterNotes + kPpqEpsilon));
 
     // Playback started, stopped, or the playhead moved: anything scheduled
     // belongs to the old position, and step history no longer applies.

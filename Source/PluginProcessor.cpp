@@ -42,6 +42,7 @@ void PlydrmAudioProcessor::cacheParamPointers()
         p.humanizeMs = raw (apvts, ParamIDs::voiceParam (info, "humanizeMs"));
         p.level = raw (apvts, ParamIDs::voiceParam (info, "level"));
         p.pitch = raw (apvts, ParamIDs::voiceParam (info, "pitch"));
+        p.drive = raw (apvts, ParamIDs::voiceParam (info, "drive"));
     }
 
     densityParam = raw (apvts, ParamIDs::density);
@@ -49,13 +50,17 @@ void PlydrmAudioProcessor::cacheParamPointers()
     midiOutEnabledParam = raw (apvts, ParamIDs::midiOutEnabled);
     synthEnabledParam = raw (apvts, ParamIDs::synthEnabled);
     masterGainParam = raw (apvts, ParamIDs::masterGain);
+    driveTypeParam = raw (apvts, ParamIDs::driveType);
+    limiterParam = raw (apvts, ParamIDs::limiter);
 }
 
 void PlydrmAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     noteLengthSamples = juce::jmax<int64_t> (1, static_cast<int64_t> (sampleRate * 0.03));
     patternEngine.prepareToPlay (sampleRate);
-    drumSynth.prepare (sampleRate, samplesPerBlock);
+    drumSynth.prepare (sampleRate);
+    outputStage.prepare (sampleRate, masterGainParam->load());
+    juce::ignoreUnused (samplesPerBlock);
     samplePosition = 0;
 
     // Notes still waiting for their note-off would be left hanging on the
@@ -137,6 +142,10 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                              static_cast<int> (std::lround (stepDivisionParam->load())));
     patternEngine.setStepLength (stepDivisionQuarterLength[static_cast<size_t> (divisionIndex)]);
 
+    const int driveTypeIndex = juce::jlimit (0, (int) cmfx::DriveType::Count - 1,
+                                              static_cast<int> (std::lround (driveTypeParam->load())));
+    drumSynth.setDriveType (static_cast<cmfx::DriveType> (driveTypeIndex));
+
     // --- Pull latest parameter values into the engine ----------------------
     const float density = densityParam->load();
     const float densityFactor = 0.4f + (density / 100.0f) * 1.2f; // 50% -> 1.0x
@@ -147,6 +156,20 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // --- Generate this block's triggers -------------------------------------
     triggers.clear();
     patternEngine.process (host, numSamples, triggers);
+
+    for (int i = 0; i < numVoices; ++i)
+    {
+        const auto& pattern = patternEngine.getPatternForVoice (static_cast<VoiceId> (i));
+        uint64_t packed = static_cast<uint64_t> (pattern.length) << 32;
+        for (int k = 0; k < pattern.length; ++k)
+            if (pattern[k])
+                packed |= uint64_t { 1 } << k;
+        displayPatterns[static_cast<size_t> (i)].store (packed, std::memory_order_relaxed);
+    }
+    displayStep.store (patternEngine.getCurrentStep(), std::memory_order_relaxed);
+    displayRunning.store (patternEngine.isRunning(), std::memory_order_relaxed);
+    for (const auto& trig : triggers)
+        displayHitCounts[static_cast<size_t> (trig.voice)].fetch_add (1, std::memory_order_relaxed);
 
     displayBpm.store (patternEngine.getBpm(), std::memory_order_relaxed);
     displayHasHostTempo.store (host.hasBpm, std::memory_order_relaxed);
@@ -168,15 +191,16 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const auto& p = voiceParams[static_cast<size_t> (trig.voice)];
         const float level = p.level->load();
         const float pitch = p.pitch->load();
+        const float drive = p.drive->load() / 100.0f;
 
         if (synthEnabled)
         {
             if (trig.sampleOffset > rendered)
             {
-                drumSynth.renderNextBlock (buffer, rendered, trig.sampleOffset - rendered);
+                drumSynth.render (buffer.getArrayOfWritePointers(), buffer.getNumChannels(), rendered, trig.sampleOffset - rendered);
                 rendered = trig.sampleOffset;
             }
-            drumSynth.noteOn (trig.voice, trig.velocity * level, pitch);
+            drumSynth.noteOn (trig.voice, trig.velocity * level, pitch, drive);
         }
 
         if (midiOutEnabled && pendingNoteOffs.size() < kMaxPendingNoteOffs)
@@ -192,7 +216,7 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // --- Synthesize the rest of the block -----------------------------------
     if (synthEnabled && rendered < numSamples)
-        drumSynth.renderNextBlock (buffer, rendered, numSamples - rendered);
+        drumSynth.render (buffer.getArrayOfWritePointers(), buffer.getNumChannels(), rendered, numSamples - rendered);
 
     // Note-offs go out even when MIDI Out has just been switched off, so no
     // note it already started is left hanging.
@@ -210,10 +234,22 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
     }
 
-    const float masterGain = masterGainParam->load();
-    buffer.applyGain (masterGain);
+    // --- Output: smoothed master gain, then the soft limiter ----------------
+    outputStage.setGain (masterGainParam->load());
+    outputStage.setLimiter (limiterParam->load() > 0.5f);
+    outputStage.process (buffer.getArrayOfWritePointers(), buffer.getNumChannels(), numSamples);
 
     samplePosition = blockEnd;
+}
+
+Pattern PlydrmAudioProcessor::getDisplayPattern (VoiceId voice) const noexcept
+{
+    const auto packed = displayPatterns[static_cast<size_t> (voice)].load (std::memory_order_relaxed);
+    Pattern p;
+    p.length = std::clamp (static_cast<int> (packed >> 32), 0, kMaxPatternSteps);
+    for (int k = 0; k < p.length; ++k)
+        p.step[static_cast<size_t> (k)] = ((packed >> k) & 1u) != 0;
+    return p;
 }
 
 void PlydrmAudioProcessor::evolvePatterns()

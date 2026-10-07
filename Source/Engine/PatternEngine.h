@@ -93,6 +93,12 @@ public:
 
     double getBpm() const noexcept { return clock.getBpm(); }
 
+    /** The shared step at the start of the last processed block (step k is
+        at PPQ k * step length), and whether the clock is running (false
+        while the host is stopped). For display. */
+    int64_t getCurrentStep() const noexcept { return currentStep; }
+    bool isRunning() const noexcept { return running; }
+
 private:
     struct VoiceRuntime
     {
@@ -118,6 +124,8 @@ private:
     double lastStepPpq = 0.0;              // PPQ of the last step handled, so no step fires twice
     bool hasLastStep = false;
     int64_t totalSamplesElapsed = 0;
+    int64_t currentStep = 0;
+    bool running = false;
 
     std::array<VoiceRuntime, numVoices> voices;
     std::vector<PendingEvent> pending;

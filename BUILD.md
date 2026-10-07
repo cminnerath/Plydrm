@@ -76,11 +76,12 @@ To get Plydrm into your DAW's scan path, either:
 
 ## Running the pattern-engine unit tests
 
-Everything that decides when a drum hits (`Source/Engine/*`: the Euclidean
-patterns, the transport clock and the step scheduler) is plain C++ with no
-JUCE, built as the `plydrm_engine` library. `PlydrmTests` tests it without a
-host and builds without JUCE at all (`-DPLYDRM_BUILD_PLUGIN=OFF` skips the
-plugin):
+Everything that decides when a drum hits and how it sounds
+(`Source/Engine/*`: the Euclidean patterns, the transport clock and the step
+scheduler; `Source/Synth/*`: the drum synth and the output stage) is plain
+C++ with no JUCE, built as the `plydrm_engine` library. `PlydrmTests` tests
+it without a host and builds without JUCE at all (`-DPLYDRM_BUILD_PLUGIN=OFF`
+skips the plugin):
 
 ```bash
 cmake --build build --target PlydrmTests
@@ -113,6 +114,10 @@ for the long one:
 ```bash
 ./build/SoakTests full
 ```
+
+`EditorTests` builds the real editor without a window and checks its layout
+(every control inside the window, none overlapping) and the pattern view.
+`./build/EditorTests editor.png` also saves a snapshot of the editor.
 
 To check `ProcessorTests`' New Seed test for data races, build it with
 ThreadSanitizer:
@@ -149,8 +154,8 @@ cmake --build build-tsan --target ProcessorTests
 
 ## Notes on the CMake structure
 
-- `plydrm_engine` (static library, no JUCE) holds `Source/Engine/*`. Both
-  the plugin and `PlydrmTests` link it.
+- `plydrm_engine` (static library, no JUCE) holds `Source/Engine/*` and
+  `Source/Synth/*`. The plugin and every test executable link it.
 - `juce_add_plugin(Plydrm ...)` declares the plugin target; `FORMATS` is
   `VST3` + `Standalone` on Windows, plus `AU` on macOS, and `VST3` only on
   Linux.
