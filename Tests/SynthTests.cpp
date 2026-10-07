@@ -13,13 +13,12 @@ namespace
 
     // Mono render of one hit for `seconds`.
     std::vector<float> renderHit (VoiceId voice, float drive, cmfx::DriveType type, float pitch = 0.0f,
-                                  double seconds = 1.0, uint32_t seed = 7)
+                                  double seconds = 1.0, uint32_t variation = 7)
     {
         DrumSynth synth;
         synth.prepare (sampleRate);
-        synth.reseed (seed);
         synth.setDriveType (type);
-        synth.noteOn (voice, 1.0f, pitch, drive);
+        synth.noteOn (voice, 1.0f, pitch, drive, variation);
 
         std::vector<float> out (static_cast<size_t> (seconds * sampleRate), 0.0f);
         float* channels[] = { out.data() };
@@ -88,14 +87,14 @@ void runSynthTests()
                           + std::to_string (zHigh) + " zero crossings)");
     }
 
-    // --- Same seed, same sound; different seed, different sound ---------------
+    // --- Same variation, same hit; different variation, different hit ---------
     {
         PLYDRM_CHECK (renderHit (VoiceId::Snare, 0.0f, cmfx::DriveType::Soft, 0.0f, 0.5, 1)
                           == renderHit (VoiceId::Snare, 0.0f, cmfx::DriveType::Soft, 0.0f, 0.5, 1),
-                      "the same seed should give the same snare");
+                      "the same variation should give the same snare");
         PLYDRM_CHECK (renderHit (VoiceId::Snare, 0.0f, cmfx::DriveType::Soft, 0.0f, 0.5, 1)
                           != renderHit (VoiceId::Snare, 0.0f, cmfx::DriveType::Soft, 0.0f, 0.5, 2),
-                      "a different seed should give a different snare");
+                      "a different variation should give a different snare");
     }
 
     // --- Rendering in pieces gives the same samples as one call --------------
@@ -104,9 +103,8 @@ void runSynthTests()
         {
             DrumSynth synth;
             synth.prepare (sampleRate);
-            synth.reseed (3);
             for (int v = 0; v < numVoices; ++v)
-                synth.noteOn (static_cast<VoiceId> (v), 0.8f, 0.0f, 0.3f);
+                synth.noteOn (static_cast<VoiceId> (v), 0.8f, 0.0f, 0.3f, static_cast<uint32_t> (v + 3));
             std::vector<float> out (24000, 0.0f);
             float* channels[] = { out.data() };
             for (int start = 0; start < 24000; start += chunk)
@@ -122,12 +120,11 @@ void runSynthTests()
     {
         DrumSynth synth;
         synth.prepare (sampleRate);
-        synth.reseed (11);
         std::vector<float> out (48000, 0.0f);
         float* channels[] = { out.data() };
         for (int i = 0; i < 200; ++i)                  // 200 hits, 10 samples apart: far more than the pool holds
         {
-            synth.noteOn (static_cast<VoiceId> (i % numVoices), 1.0f, 0.0f, 1.0f);
+            synth.noteOn (static_cast<VoiceId> (i % numVoices), 1.0f, 0.0f, 1.0f, static_cast<uint32_t> (i));
             synth.render (channels, 1, i * 10, 10);
         }
         synth.render (channels, 1, 2000, 46000);

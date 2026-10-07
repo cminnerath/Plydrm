@@ -45,6 +45,7 @@ void PatternEngine::resetPosition()
     clock.prepare (sampleRate);
     wasFollowingHost = false;
     hasLastStep = false;
+    lastEvolveBar = std::numeric_limits<int64_t>::min();
     totalSamplesElapsed = 0;
     pending.clear();
 }
@@ -76,12 +77,6 @@ void PatternEngine::regeneratePatternIfNeeded (VoiceRuntime& v)
     v.cachedRotation = rotation;
 }
 
-void PatternEngine::reseed (uint32_t newSeed)
-{
-    for (size_t i = 0; i < voices.size(); ++i)
-        voices[i].rng.seed (newSeed + static_cast<uint32_t> (i) * 7919u);
-}
-
 const Pattern& PatternEngine::getPatternForVoice (VoiceId voice) const
 {
     return voices[static_cast<size_t> (voice)].pattern;
@@ -106,8 +101,8 @@ void PatternEngine::handleStep (int64_t stepIndex, int64_t stepSample, int64_t b
         if (positiveMod (loopRepeat, everyN) != 0)
             continue;
 
-        std::uniform_real_distribution<float> pct (0.0f, 100.0f);
-        if (pct (v.rng) > v.params.probabilityPercent)
+        const float roll = 100.0f * unitFloat (stepRandom (seed, vi, stepIndex, StepRandomUse::Probability));
+        if (roll >= v.params.probabilityPercent)
             continue;
 
         // Swing follows the shared clock, not the voice's own loop, so every
@@ -120,8 +115,8 @@ void PatternEngine::handleStep (int64_t stepIndex, int64_t stepSample, int64_t b
         if (v.params.humanizeMs > 0.0f)
         {
             const float range = std::min (v.params.humanizeMs, kMaxHumanizeMs);
-            std::uniform_real_distribution<float> jit (-range, range);
-            jitterSamples = static_cast<double> (jit (v.rng)) / 1000.0 * sampleRate;
+            const float jitterMs = range * (2.0f * unitFloat (stepRandom (seed, vi, stepIndex, StepRandomUse::Humanize)) - 1.0f);
+            jitterSamples = static_cast<double> (jitterMs) / 1000.0 * sampleRate;
         }
 
         // Only a step right after playback (re)starts can be pulled before the
@@ -129,14 +124,14 @@ void PatternEngine::handleStep (int64_t stepIndex, int64_t stepSample, int64_t b
         int64_t fireSample = stepSample + static_cast<int64_t> (std::llround (delaySamples + jitterSamples));
         fireSample = std::max (fireSample, blockStart);
 
-        std::uniform_real_distribution<float> velRange (0.75f, 1.0f);
-        const float velocity = velRange (v.rng);
+        const float velocity = 0.75f + 0.25f * unitFloat (stepRandom (seed, vi, stepIndex, StepRandomUse::Velocity));
+        const auto variation = static_cast<uint32_t> (stepRandom (seed, vi, stepIndex, StepRandomUse::Variation));
 
         // Full queue: drop the hit rather than allocate on the audio thread.
         if (pending.size() >= static_cast<size_t> (kMaxPendingEvents))
             continue;
 
-        pending.push_back ({ fireSample, static_cast<VoiceId> (vi), velocity });
+        pending.push_back ({ fireSample, static_cast<VoiceId> (vi), velocity, variation });
     }
 }
 
@@ -150,7 +145,7 @@ void PatternEngine::flushPending (int64_t blockStart, int64_t blockEnd, std::vec
         {
             int64_t offset = it->fireSample - blockStart;
             offset = std::clamp<int64_t> (offset, 0, blockLen - 1);
-            outTriggers.push_back ({ it->voice, static_cast<int> (offset), it->velocity });
+            outTriggers.push_back ({ it->voice, static_cast<int> (offset), it->velocity, it->variation });
             it = pending.erase (it);
         }
         else
@@ -180,6 +175,7 @@ void PatternEngine::process (const HostTimeInfo& host, int numSamples, std::vect
     {
         pending.clear();
         hasLastStep = false;
+        lastEvolveBar = std::numeric_limits<int64_t>::min();
     }
     wasFollowingHost = following;
 
@@ -222,6 +218,9 @@ void PatternEngine::process (const HostTimeInfo& host, int numSamples, std::vect
         }
     }
 
+    if (! hostStopped)
+        checkEvolve (clock.ppqAt (0), clock.ppqAt (numSamples));
+
     totalSamplesElapsed = blockEnd;
 
     // Newly generated events may already fall inside this block.
@@ -229,6 +228,28 @@ void PatternEngine::process (const HostTimeInfo& host, int numSamples, std::vect
 
     std::sort (outTriggers.begin(), outTriggers.end(),
                [] (const TriggerEvent& a, const TriggerEvent& b) { return a.sampleOffset < b.sampleOffset; });
+}
+
+void PatternEngine::checkEvolve (double startPpq, double endPpq) noexcept
+{
+    if (evolveIntervalBars <= 0)
+        return;
+
+    // Look kEvolveLeadSeconds ahead: did that point cross a bar line in this block?
+    const double beatsPerBar = clock.getBeatsPerBar();
+    const double lead = kEvolveLeadSeconds * clock.getBpm() / 60.0;
+    const double barLine = clock.gridLineAtOrBefore (endPpq + lead, beatsPerBar);
+    if (barLine <= startPpq + lead)
+        return;
+
+    // Bars counted from the start of the song (at the current meter).
+    const auto bar = static_cast<int64_t> (std::llround (barLine / beatsPerBar));
+    if (bar == lastEvolveBar)
+        return;
+    lastEvolveBar = bar;
+
+    if (positiveMod (bar, evolveIntervalBars) == 0)
+        ++evolveRequests;
 }
 
 } // namespace plydrm

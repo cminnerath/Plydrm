@@ -1,12 +1,13 @@
 #pragma once
 
 #include "Euclidean.h"
+#include "StepRandom.h"
 #include "TransportClock.h"
 #include "VoiceTypes.h"
 #include <array>
 #include <vector>
-#include <random>
 #include <cstdint>
+#include <limits>
 
 namespace plydrm
 {
@@ -33,6 +34,7 @@ struct TriggerEvent
     VoiceId voice;
     int sampleOffset = 0;
     float velocity = 1.0f;
+    uint32_t variation = 0;     // seeds the synth's per-hit variation and noise
 };
 
 /** Sample-accurate, tempo-synced Euclidean/polymeter pattern generator.
@@ -78,9 +80,20 @@ public:
         outTriggers (sampleOffset is relative to the start of this block). */
     void process (const HostTimeInfo& host, int numSamples, std::vector<TriggerEvent>& outTriggers);
 
-    /** Re-seeds the per-voice RNGs used for probability rolls and
-        micro-timing humanization. */
-    void reseed (uint32_t newSeed);
+    /** Sets the seed every random value comes from (probability rolls,
+        humanize, velocity, hit variation). Each value is a pure function of
+        the seed, the voice and the step, so the same seed gives the same
+        hits at the same song position wherever playback started. */
+    void setSeed (uint32_t newSeed) noexcept { seed = newSeed; }
+
+    /** Auto-evolve: every `bars` bars (0 = off), shortly before the bar line
+        (kEvolveLeadSeconds), the evolve request count goes up by one. The
+        processor polls it from the message thread and mutates the pattern
+        parameters there, in time for the downbeat. */
+    void setEvolveInterval (int bars) noexcept { evolveIntervalBars = bars; }
+    uint32_t getEvolveRequestCount() const noexcept { return evolveRequests; }
+
+    static constexpr double kEvolveLeadSeconds = 0.15;
 
     /** Forgets the playback position and anything scheduled, without
         touching cached patterns or RNG state. */
@@ -107,7 +120,6 @@ private:
         int cachedSteps = -1;
         int cachedHits = -1;
         int cachedRotation = -1;
-        std::mt19937 rng { std::random_device {}() };
     };
 
     struct PendingEvent
@@ -115,6 +127,7 @@ private:
         int64_t fireSample;
         VoiceId voice;
         float velocity;
+        uint32_t variation;
     };
 
     double sampleRate = 44100.0;
@@ -126,6 +139,11 @@ private:
     int64_t totalSamplesElapsed = 0;
     int64_t currentStep = 0;
     bool running = false;
+    uint32_t seed = 0;
+
+    int evolveIntervalBars = 0;
+    uint32_t evolveRequests = 0;
+    int64_t lastEvolveBar = std::numeric_limits<int64_t>::min();
 
     std::array<VoiceRuntime, numVoices> voices;
     std::vector<PendingEvent> pending;
@@ -133,6 +151,7 @@ private:
     void regeneratePatternIfNeeded (VoiceRuntime& v);
     void handleStep (int64_t stepIndex, int64_t stepSample, int64_t blockStart, double samplesPerStep);
     void flushPending (int64_t blockStart, int64_t blockEnd, std::vector<TriggerEvent>& outTriggers);
+    void checkEvolve (double startPpq, double endPpq) noexcept;
 };
 
 } // namespace plydrm

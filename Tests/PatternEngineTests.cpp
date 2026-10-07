@@ -1,5 +1,6 @@
 #include "TestMain.h"
 #include "../Source/Engine/PatternEngine.h"
+#include <cstring>
 #include <functional>
 #include <vector>
 
@@ -16,7 +17,7 @@ namespace
         PatternEngine engine;
         engine.prepareToPlay (sampleRate);
         engine.setStepLength (stepQuarterLen);
-        engine.reseed (1234);
+        engine.setSeed (1234);
         return engine;
     }
 
@@ -86,7 +87,13 @@ namespace
     {
         int64_t sample;
         VoiceId voice;
-        bool operator== (const AbsoluteTrigger& o) const { return sample == o.sample && voice == o.voice; }
+        float velocity = 1.0f;
+        uint32_t variation = 0;
+        bool operator== (const AbsoluteTrigger& o) const
+        {
+            return sample == o.sample && voice == o.voice && std::memcmp (&velocity, &o.velocity, sizeof (float)) == 0
+                   && variation == o.variation;
+        }
     };
 
     // Runs [0, total) in blocks; `blockSize` and `host` are asked for each block by its start sample.
@@ -102,7 +109,7 @@ namespace
             events.clear();
             engine.process (host (start), n, events);
             for (auto& e : events)
-                out.push_back ({ start + e.sampleOffset, e.voice });
+                out.push_back ({ start + e.sampleOffset, e.voice, e.velocity, e.variation });
             start += n;
         }
         return out;
@@ -293,5 +300,101 @@ void runPatternEngineTests()
         PLYDRM_CHECK (! fixed.empty(), "the pattern should fire");
         PLYDRM_CHECK (fixed == odd, "uneven block sizes should give the same triggers as 512-sample blocks");
         PLYDRM_CHECK (fixed == tiny, "1-sample blocks should give the same triggers as 512-sample blocks");
+    }
+
+    // --- The seed: same seed, same hits; another seed, other hits -------------
+    {
+        auto randomish = [] (PatternEngine& engine)
+        {
+            for (int i = 0; i < numVoices; ++i)
+            {
+                auto v = allHits (8);
+                v.probabilityPercent = 50.0f;
+                v.humanizeMs = 10.0f;
+                engine.setVoiceParams (static_cast<VoiceId> (i), v);
+            }
+        };
+        const auto playing = [] (int64_t s) { return playingAt (static_cast<double> (s) * ppqPerSample); };
+        const auto blocks = [] (int64_t) { return 512; };
+
+        auto a = makeEngine(); randomish (a); a.setSeed (99);
+        auto b = makeEngine(); randomish (b); b.setSeed (99);
+        auto c = makeEngine(); randomish (c); c.setSeed (100);
+        const auto ra = run (a, 48000 * 4, blocks, playing);
+        PLYDRM_CHECK (ra == run (b, 48000 * 4, blocks, playing), "the same seed should give the same hits");
+        PLYDRM_CHECK (ra != run (c, 48000 * 4, blocks, playing), "another seed should give other hits");
+    }
+
+    // --- Starting mid-song gives the same hits as playing through to there ----
+    {
+        auto randomish = [] (PatternEngine& engine)
+        {
+            auto kick = allHits (5); kick.probabilityPercent = 60.0f; kick.humanizeMs = 15.0f; kick.swingPercent = 20.0f;
+            auto hat = allHits (7);  hat.hits = 5; hat.probabilityPercent = 40.0f; hat.everyN = 2;
+            engine.setVoiceParams (VoiceId::Kick, kick);
+            engine.setVoiceParams (VoiceId::Hat, hat);
+            VoiceParams off; off.enabled = false;
+            engine.setVoiceParams (VoiceId::Snare, off);
+            engine.setVoiceParams (VoiceId::Perc, off);
+        };
+
+        // A plays from the start of the song for 16 beats; B starts at beat 8.
+        auto a = makeEngine(); randomish (a); a.setSeed (5);
+        auto b = makeEngine(); randomish (b); b.setSeed (5);
+        const int64_t beat = 24000;
+        const auto fromStart = run (a, 16 * beat, [] (int64_t) { return 512; },
+                                    [] (int64_t s) { return playingAt (static_cast<double> (s) * ppqPerSample); });
+        auto fromMiddle = run (b, 8 * beat, [] (int64_t) { return 333; },
+                               [] (int64_t s) { return playingAt (8.0 + static_cast<double> (s) * ppqPerSample); });
+        for (auto& t : fromMiddle)
+            t.sample += 8 * beat;
+
+        // Skip the first 30 ms after B starts: a hit humanized early there can't be played before playback began.
+        const int64_t from = 8 * beat + 1440;
+        std::vector<AbsoluteTrigger> expected, got;
+        for (auto& t : fromStart)  if (t.sample >= from) expected.push_back (t);
+        for (auto& t : fromMiddle) if (t.sample >= from) got.push_back (t);
+
+        PLYDRM_CHECK (! expected.empty(), "the second half should have hits");
+        PLYDRM_CHECK (got == expected, "starting at beat 8 should give the same hits as playing through ("
+                                           + std::to_string (got.size()) + " vs " + std::to_string (expected.size()) + ")");
+    }
+
+    // --- Auto-evolve requests: shortly before every Nth bar line --------------
+    {
+        auto requestTimes = [] (int everyBars, bool playing)
+        {
+            auto engine = makeEngine();
+            disableAllExcept (engine, VoiceId::Kick, allHits (4));
+            engine.setEvolveInterval (everyBars);
+            std::vector<int64_t> times;
+            uint32_t seen = 0;
+            std::vector<TriggerEvent> events;
+            for (int64_t s = 0; s < 4 * 96000 + 4800; s += 512)    // 4 bars and a bit (a bar is 96000 samples)
+            {
+                events.clear();
+                engine.process (playing ? playingAt (static_cast<double> (s) * ppqPerSample) : stoppedAt (0.0), 512, events);
+                if (engine.getEvolveRequestCount() != seen)
+                {
+                    seen = engine.getEvolveRequestCount();
+                    times.push_back (s);
+                }
+            }
+            return times;
+        };
+
+        const auto every1 = requestTimes (1, true);
+        PLYDRM_CHECK (every1.size() == 4, "every bar: 4 requests in 4 bars, got " + std::to_string (every1.size()));
+        bool onTime = true;
+        for (size_t i = 0; i < every1.size(); ++i)
+        {
+            // kEvolveLeadSeconds (0.15 s = 7200 samples) before bar line i + 1.
+            const int64_t due = static_cast<int64_t> (i + 1) * 96000 - 7200;
+            onTime = onTime && every1[i] <= due && every1[i] + 512 > due;
+        }
+        PLYDRM_CHECK (onTime, "each request should come in the block 0.15 s before its bar line");
+        PLYDRM_CHECK (requestTimes (2, true).size() == 2, "every 2 bars: 2 requests in 4 bars");
+        PLYDRM_CHECK (requestTimes (0, true).empty(), "off: no requests");
+        PLYDRM_CHECK (requestTimes (1, false).empty(), "stopped: no requests");
     }
 }

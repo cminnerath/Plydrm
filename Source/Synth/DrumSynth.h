@@ -5,7 +5,6 @@
 #include "../cmfx/Svf.h"
 #include <array>
 #include <cstdint>
-#include <random>
 
 namespace plydrm
 {
@@ -14,7 +13,8 @@ namespace plydrm
     plus filtered noise. Every triggered hit randomizes its own pitch/decay/
     filter-cutoff slightly around the voice's configured value for an
     organic, non-looping feel, and can be driven through one of cmfx's
-    level-matched drive curves.
+    level-matched drive curves. Each hit's randomness comes from the
+    `variation` it is triggered with, so hits are repeatable.
 
     Plain C++ (no JUCE), real-time safe after prepare(), and its output does
     not depend on how a block is split into render() calls. */
@@ -23,15 +23,14 @@ class DrumSynth
 public:
     void prepare (double sampleRate) noexcept;
 
-    /** Re-seeds the per-hit variation and noise. Audio thread only. */
-    void reseed (uint32_t seed) noexcept { rng.seed (seed); }
-
     /** The drive curve every hit uses (from the Drive Type parameter). */
     void setDriveType (cmfx::DriveType type) noexcept { driveType = type; }
 
     /** Triggers one hit for a voice. velocity is 0-1, pitchSemitones the
-        user's per-voice tuning offset, drive 0-1 (0 = clean). */
-    void noteOn (VoiceId voice, float velocity, float pitchSemitones, float drive) noexcept;
+        user's per-voice tuning offset, drive 0-1 (0 = clean). `variation`
+        decides the hit's random pitch/decay/cutoff variation and its noise,
+        so the same value always gives the same hit. */
+    void noteOn (VoiceId voice, float velocity, float pitchSemitones, float drive, uint32_t variation) noexcept;
 
     /** Renders numSamples starting at startSample into every channel, ADDING
         to (not overwriting) whatever is already there. */
@@ -62,12 +61,12 @@ private:
         FilterOut filterOut = FilterOut::LowPass;
         cmfx::SvfCoef filter;
         cmfx::SvfState filterState;
+        uint64_t noiseState = 0;        // this hit's own noise generator (splitmix64)
     };
 
     double sampleRate = 44100.0;
     cmfx::DriveType driveType = cmfx::DriveType::Soft;
     std::array<ActiveHit, maxActiveHits> hits;
-    std::mt19937 rng { std::random_device {}() };
 
     ActiveHit* allocateHit() noexcept;
     float renderSample (ActiveHit& hit) noexcept;

@@ -59,6 +59,9 @@ PlydrmAudioProcessorEditor::PlydrmAudioProcessorEditor (PlydrmAudioProcessor& p)
                  juce::StringArray (stepDivisionChoices.data(), (int) stepDivisionChoices.size()));
     setupChoice (driveType, "Drive", ParamIDs::driveType,
                  juce::StringArray (driveTypeChoices.data(), (int) driveTypeChoices.size()));
+    setupChoice (autoEvolve, "Auto", ParamIDs::autoEvolve,
+                 juce::StringArray (autoEvolveChoices.data(), (int) autoEvolveChoices.size()));
+    autoEvolve.box.setTooltip ("Evolve the pattern automatically every N bars");
 
     for (auto* toggle : { &midiOutToggle, &synthToggle, &limiterToggle })
         addAndMakeVisible (*toggle);
@@ -73,6 +76,12 @@ PlydrmAudioProcessorEditor::PlydrmAudioProcessorEditor (PlydrmAudioProcessor& p)
     randomizeSeedButton.onClick = [this] { plydrmProcessor.randomizeSeed(); };
     addAndMakeVisible (evolveButton);
     addAndMakeVisible (randomizeSeedButton);
+
+    seedLabel.setColour (juce::Label::textColourId, theme::dimText);
+    seedLabel.setJustificationType (juce::Justification::centredRight);
+    seedLabel.setFont (juce::FontOptions (12.0f));
+    seedLabel.setTooltip ("The seed behind every random choice. It is saved with the session, so it always plays the same.");
+    addAndMakeVisible (seedLabel);
 
     setSize (editorWidth, editorHeight);
     timerCallback();   // fill in the tempo now, not on the first tick
@@ -207,7 +216,7 @@ void PlydrmAudioProcessorEditor::resized()
     placeKnob (masterGainKnob, knobRow);
     panel.removeFromTop (8);
 
-    for (auto* choice : { &stepDivision, &driveType })
+    for (auto* choice : { &stepDivision, &driveType, &autoEvolve })
     {
         auto line = panel.removeFromTop (24);
         choice->caption.setBounds (line.removeFromLeft (56));
@@ -215,18 +224,22 @@ void PlydrmAudioProcessorEditor::resized()
         panel.removeFromTop (6);
     }
 
-    panel.removeFromTop (2);
     for (auto* toggle : { &midiOutToggle, &synthToggle, &limiterToggle })
-        toggle->setBounds (panel.removeFromTop (24));
+        toggle->setBounds (panel.removeFromTop (22));
 
-    panel.removeFromTop (10);
+    panel.removeFromTop (8);
     evolveButton.setBounds (panel.removeFromTop (28));
     panel.removeFromTop (6);
-    randomizeSeedButton.setBounds (panel.removeFromTop (28));
+    auto seedRow = panel.removeFromTop (28);
+    randomizeSeedButton.setBounds (seedRow.removeFromLeft (100));
+    seedLabel.setBounds (seedRow);
 }
 
 void PlydrmAudioProcessorEditor::timerCallback()
 {
+    seedLabel.setText ("Seed " + juce::String::toHexString ((juce::int64) plydrmProcessor.getSeed()).toUpperCase().paddedLeft ('0', 8),
+                       juce::dontSendNotification);
+
     // Read what the audio thread published: the play head may only be asked
     // from inside processBlock.
     if (plydrmProcessor.hostReportsTempo())

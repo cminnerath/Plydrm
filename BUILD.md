@@ -148,9 +148,11 @@ cmake --build build-tsan --target ProcessorTests
    sampler/VST with the generated pattern, independently of (or alongside)
    the internal synth engine. Logic does not take MIDI output from an AU
    instrument.
-5. Use **Evolve / Mutate** to nudge hits/rotation/probability/swing, and
-   **New Seed** to re-roll the probability/humanize/synth randomization
-   without changing the Euclidean pattern shape itself.
+5. Use **Evolve / Mutate** to nudge hits/rotation/probability/swing, or set
+   **Auto** to do it every 1-16 bars. **New Seed** re-rolls the
+   probability/humanize/velocity/synth randomization without changing the
+   Euclidean pattern shape itself; the seed is saved with the session, so
+   a session plays back (and bounces) exactly the same every time.
 
 ## Notes on the CMake structure
 

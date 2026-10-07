@@ -27,11 +27,12 @@ struct VoiceParamPointers
     std::atomic<float>* drive = nullptr;
 };
 
-class PlydrmAudioProcessor final : public juce::AudioProcessor
+class PlydrmAudioProcessor final : public juce::AudioProcessor,
+                                   private juce::Timer
 {
 public:
     PlydrmAudioProcessor();
-    ~PlydrmAudioProcessor() override = default;
+    ~PlydrmAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -56,21 +57,28 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    /** Nudges every enabled voice's hits/rotation/probability/swing/everyN
-        by a small random amount - the "evolve" GUI button. Safe to call
-        from the message thread; writes go through setValueNotifyingHost so
-        the GUI sliders animate and the host sees the automation change. */
+    /** Nudges every voice's hits/rotation/probability/swing (and sometimes
+        everyN) by a small random amount - the "Evolve" GUI button, and what
+        Auto Evolve does every N bars. Message thread only: each change goes
+        through setValueNotifyingHost inside a change gesture, so the GUI
+        knobs move and the host records it like a user edit. */
     void evolvePatterns();
 
-    /** Re-seeds the pattern engine's RNGs (probability rolls, humanize
-        jitter) and the synth's (hit variation) - the "New Seed" GUI button.
-        Safe to call from the message thread: it only posts the new seed,
-        and the audio thread applies it at the start of its next block. */
+    /** Runs evolvePatterns() if the audio thread has asked for an
+        auto-evolve since the last call (at most once per call). A timer
+        calls it on the message thread; tests call it directly. */
+    void handleEvolveRequests();
+
+    /** Picks a new random seed - the "New Seed" GUI button. */
     void randomizeSeed();
 
-    /** Like randomizeSeed(), with a given seed: the same seed gives the same
-        probability rolls, humanize and hit variation. Same threading rules. */
+    /** Sets the seed every random value comes from (probability rolls,
+        humanize, velocity and the synth's per-hit variation): the same seed
+        gives the same hits at the same song position. It is saved with the
+        session. Safe from the message thread: the audio thread picks it up
+        at the start of its next block. */
     void setSeed (uint32_t seed) noexcept;
+    uint32_t getSeed() const noexcept { return currentSeed.load (std::memory_order_relaxed); }
 
     /** What the host last reported, published by the audio thread for the
         GUI (which must not query the play head itself). */
@@ -100,6 +108,7 @@ private:
     std::atomic<float>* masterGainParam = nullptr;
     std::atomic<float>* driveTypeParam = nullptr;
     std::atomic<float>* limiterParam = nullptr;
+    std::atomic<float>* autoEvolveParam = nullptr;
 
     PatternEngine patternEngine;
     DrumSynth drumSynth;
@@ -120,9 +129,17 @@ private:
     int64_t samplePosition = 0;
     int64_t noteLengthSamples = 1323;       // 30 ms MIDI notes; set from the rate in prepareToPlay
 
-    // New Seed: posted by the message thread, applied by the audio thread.
+    // The seed: currentSeed is what is saved and shown; a new one is posted by
+    // the message thread (requestedSeed) and applied by the audio thread.
+    std::atomic<uint32_t> currentSeed { 0 };
     std::atomic<uint32_t> requestedSeed { 0 };
     std::atomic<bool> seedRequested { false };
+
+    // Auto-evolve: the engine's request count, published by the audio thread;
+    // the message thread remembers how many it has handled.
+    std::atomic<uint32_t> evolveRequests { 0 };
+    uint32_t evolveRequestsHandled = 0;
+    void timerCallback() override { handleEvolveRequests(); }
 
     // Host state for the GUI (see getDisplayBpm).
     static_assert (std::atomic<double>::is_always_lock_free);

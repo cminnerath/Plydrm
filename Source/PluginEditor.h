@@ -70,6 +70,7 @@ private:
     KnobControl masterGainKnob;
     ChoiceControl stepDivision;
     ChoiceControl driveType;
+    ChoiceControl autoEvolve;
 
     juce::ToggleButton midiOutToggle { "MIDI Out" };
     juce::ToggleButton synthToggle { "Internal Synth" };
@@ -80,6 +81,8 @@ private:
 
     juce::TextButton evolveButton { "Evolve / Mutate" };
     juce::TextButton randomizeSeedButton { "New Seed" };
+    juce::Label seedLabel;
+    juce::TooltipWindow tooltipWindow { this, 600 };
 
     void setupKnob (KnobControl& knob, const juce::String& captionText, const juce::String& paramID, juce::Colour colour);
     void setupChoice (ChoiceControl& choice, const juce::String& captionText, const juce::String& paramID,

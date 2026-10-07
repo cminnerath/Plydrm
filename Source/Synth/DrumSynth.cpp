@@ -1,4 +1,5 @@
 #include "DrumSynth.h"
+#include "../Engine/StepRandom.h"
 #include <algorithm>
 #include <cmath>
 
@@ -44,14 +45,20 @@ DrumSynth::ActiveHit* DrumSynth::allocateHit() noexcept
     return quietest;
 }
 
-void DrumSynth::noteOn (VoiceId voice, float velocity, float pitchSemitones, float drive) noexcept
+void DrumSynth::noteOn (VoiceId voice, float velocity, float pitchSemitones, float drive, uint32_t variation) noexcept
 {
     auto* hit = allocateHit();
 
-    std::uniform_real_distribution<float> rand01 (0.0f, 1.0f);
-    const double r1 = rand01 (rng);
-    const double r2 = rand01 (rng);
-    const double r3 = rand01 (rng);
+    // Everything random about this hit follows from `variation`.
+    hit->noiseState = splitmix64 (variation);
+    auto next01 = [hit]
+    {
+        hit->noiseState = splitmix64 (hit->noiseState);
+        return static_cast<double> (unitFloat (hit->noiseState));
+    };
+    const double r1 = next01();
+    const double r2 = next01();
+    const double r3 = next01();
 
     const double pitchMult = std::pow (2.0, static_cast<double> (pitchSemitones) / 12.0);
 
@@ -138,8 +145,9 @@ float DrumSynth::renderSample (ActiveHit& hit) noexcept
     }
     else
     {
-        std::uniform_real_distribution<float> noiseDist (-1.0f, 1.0f);
-        hit.filterState.process (hit.filter, noiseDist (rng), lp, bp, hp);
+        hit.noiseState = splitmix64 (hit.noiseState);
+        const double white = 2.0 * static_cast<double> (unitFloat (hit.noiseState)) - 1.0;
+        hit.filterState.process (hit.filter, white, lp, bp, hp);
         const double noise = hit.filterOut == FilterOut::HighPass ? hp
                            : hit.filterOut == FilterOut::BandPass ? bp
                                                                   : lp;
@@ -163,9 +171,8 @@ void DrumSynth::render (float* const* channels, int numChannels, int startSample
     if (std::none_of (hits.begin(), hits.end(), [] (const ActiveHit& h) { return h.active; }))
         return;
 
-    // Sample by sample, every hit in turn: the noise generator is then drawn
-    // in the same order however the block is split, so the output does not
-    // depend on the host's block size.
+    // Sample by sample, every hit in turn (each hit has its own noise
+    // generator, so the output does not depend on how the block is split).
     for (int i = startSample; i < startSample + numSamples; ++i)
     {
         float s = 0.0f;

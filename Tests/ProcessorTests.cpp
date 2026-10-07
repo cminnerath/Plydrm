@@ -314,6 +314,98 @@ int main()
                "the GUI sees the host's tempo and play state");
     }
 
+    std::printf ("the seed is saved with the session\n");
+    {
+        // Render a session, save it, load it into a new instance: the same audio.
+        auto renderFresh = [] (PlydrmAudioProcessor& p)
+        {
+            FakePlayHead ph;
+            for (const auto& v : voiceInfo)
+                setParam (p, ParamIDs::voiceParam (v, "probability"), 55.0f);
+            return render (p, &ph, 48000 * 2, 512);
+        };
+
+        PlydrmAudioProcessor original;
+        original.setSeed (123456789u);
+        const auto before = renderFresh (original);
+
+        juce::MemoryBlock saved;
+        original.getStateInformation (saved);
+
+        PlydrmAudioProcessor loaded;
+        check (loaded.getSeed() != 123456789u, "a new instance starts with its own seed");
+        loaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        check (loaded.getSeed() == 123456789u, "loading the session restores its seed");
+        check (renderFresh (loaded) == before, "and the loaded session plays exactly the same");
+
+        PlydrmAudioProcessor other;
+        other.setSeed (987654321u);
+        check (renderFresh (other) != before, "another seed plays differently");
+
+        // A session saved before the seed was (no seed property) keeps the instance's own seed.
+        auto xml = juce::AudioProcessor::getXmlFromBinary (saved.getData(), (int) saved.getSize());
+        xml->removeAttribute ("seed");
+        juce::MemoryBlock oldSession;
+        juce::AudioProcessor::copyXmlToBinary (*xml, oldSession);
+        PlydrmAudioProcessor fresh;
+        const auto ownSeed = fresh.getSeed();
+        fresh.setStateInformation (oldSession.getData(), (int) oldSession.getSize());
+        check (fresh.getSeed() == ownSeed, "an old session without a seed keeps the instance's seed");
+    }
+
+    std::printf ("auto evolve\n");
+    {
+        // Every bar: the pattern parameters change once shortly before each bar line, and only then.
+        PlydrmAudioProcessor p;
+        FakePlayHead ph;
+        p.setPlayHead (&ph);
+        p.prepareToPlay (kSampleRate, 512);
+        setParam (p, ParamIDs::autoEvolve, 1.0f);       // "1 bar"
+
+        auto snapshot = [&p]
+        {
+            juce::String s;
+            for (const auto& v : voiceInfo)
+                for (const char* id : { "hits", "rotation", "probability", "swing", "everyN" })
+                    s << p.apvts.getRawParameterValue (ParamIDs::voiceParam (v, id))->load() << " ";
+            return s;
+        };
+
+        juce::AudioBuffer<float> buffer (2, 512);
+        juce::MidiBuffer midi;
+        std::vector<int64_t> changes;
+        auto last = snapshot();
+        for (int64_t s = 0; s < 96000 * 3 - 20000; s += 512)    // just under 3 bars
+        {
+            ph.moveTo (s);
+            midi.clear();
+            p.processBlock (buffer, midi);
+            p.handleEvolveRequests();                            // what the message-thread timer does
+            const auto now = snapshot();
+            if (now != last)
+                changes.push_back (s);
+            last = now;
+        }
+
+        check (changes.size() == 2, "two changes in just under 3 bars (got " + juce::String ((int) changes.size()) + ")");
+        if (changes.size() == 2)
+            check (changes[0] > 96000 - 7200 - 512 && changes[0] < 96000 && changes[1] > 192000 - 7200 - 512 && changes[1] < 192000,
+                   "each change lands in the 0.15 s before a bar line (at " + juce::String (changes[0]) + " and "
+                       + juce::String (changes[1]) + ")");
+
+        // Off: nothing changes.
+        setParam (p, ParamIDs::autoEvolve, 0.0f);
+        const auto still = snapshot();
+        for (int64_t s = 96000 * 3; s < 96000 * 5; s += 512)
+        {
+            ph.moveTo (s);
+            midi.clear();
+            p.processBlock (buffer, midi);
+            p.handleEvolveRequests();
+        }
+        check (snapshot() == still, "with Auto Evolve off nothing changes");
+    }
+
     if (failures == 0)
         std::printf ("All processor tests passed.\n");
     else

@@ -22,7 +22,12 @@ namespace ParamIDs
     static constexpr const char* masterGain     = "masterGain";
     static constexpr const char* driveType      = "driveType";
     static constexpr const char* limiter        = "limiter";
+    static constexpr const char* autoEvolve     = "autoEvolve";
 }
+
+/** Auto-evolve choices, and how many bars apart each one evolves (0 = off). */
+static constexpr std::array<const char*, 6> autoEvolveChoices { "Off", "1 bar", "2 bars", "4 bars", "8 bars", "16 bars" };
+static constexpr std::array<int, 6> autoEvolveBars { 0, 1, 2, 4, 8, 16 };
 
 /** Drive curves (cmfx::DriveType order). */
 static constexpr std::array<const char*, 4> driveTypeChoices { "Soft", "Hard", "Fold", "Fuzz" };
@@ -143,6 +148,10 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         ParamIDs::limiter, "Limiter", true));
+
+    params.push_back (std::make_unique<juce::AudioParameterChoice> (
+        ParamIDs::autoEvolve, "Auto Evolve",
+        juce::StringArray (autoEvolveChoices.data(), (int) autoEvolveChoices.size()), 0));
 
     return { params.begin(), params.end() };
 }
