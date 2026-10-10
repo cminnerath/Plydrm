@@ -7,6 +7,12 @@ JUCE checkout you already have (version 9), pass
 `-DPLYDRM_JUCE_PATH=/path/to/JUCE` on the first configure, or set the
 `PLYDRM_JUCE_PATH` environment variable for `build.sh`.
 
+The perform pad comes from **cmperf**, the performance-surface library
+shared with Brimstone and Crucible. `FetchContent` clones a pinned tag
+(`v0.1.26`) from `github.com/cminnerath/cmperf`, which is private, so git
+needs access to it. To build against a local checkout instead, pass
+`-DPLYDRM_CMPERF_PATH=../cmperf`.
+
 ## Prerequisites
 
 - CMake >= 3.22 (JUCE 9 needs it)
@@ -99,6 +105,9 @@ fake host play head. It checks that:
 - every MIDI note-on gets its note-off, even when MIDI Out is switched off or
   the host calls `prepareToPlay` while a note is on
 - pressing New Seed from another thread while audio runs is safe
+- the perform pad takes Density and Complexity over from their knobs and
+  gives them back, Hold keeps them, and a Pad Motion loop is saved with the
+  session and plays again when it loads
 
 `SoakTests` (ported from Brimstone) fuzzes the whole audio path: random
 parameter changes, Evolve, New Seed, tempo changes and ramps, transport

@@ -5,6 +5,7 @@
 #include "Synth/DrumSynth.h"
 #include "Synth/OutputStage.h"
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <PadHost.h>
 #include <array>
 #include <vector>
 
@@ -97,6 +98,25 @@ public:
         return displayHitCounts[static_cast<size_t> (voice)].load (std::memory_order_relaxed);
     }
 
+    /** The perform pad (cmperf's PadHost): Density across, Complexity up. The
+        editor hands it the finger (setFinger) and the Pad Motion buttons
+        (command); the audio thread runs it once per block and moves each
+        macro from its knob toward the pad by the pad's amount, so a touch
+        takes over and a release (over Pad Release, unless Pad Hold) gives the
+        knobs back. The recorded loop is saved with the session. */
+    cmperf::PadHost& getPadHost() noexcept { return padHost; }
+
+    /** The Density and Complexity in effect (0 - 100 %: the knobs, moved
+        toward the pad), published by the audio thread for the pad view. */
+    float getDisplayDensity() const noexcept    { return displayDensity.load (std::memory_order_relaxed); }
+    float getDisplayComplexity() const noexcept { return displayComplexity.load (std::memory_order_relaxed); }
+
+    /** Collects the pad's loop for the session if the audio thread has
+        published a new one (after a recording closes, Play / Stop, Clear). A
+        timer calls it on the message thread, as getStateInformation does;
+        tests call it directly. */
+    void handlePadGesture();
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -109,6 +129,24 @@ private:
     std::atomic<float>* driveTypeParam = nullptr;
     std::atomic<float>* limiterParam = nullptr;
     std::atomic<float>* autoEvolveParam = nullptr;
+    std::atomic<float>* complexityParam = nullptr;
+    std::atomic<float>* padHoldParam = nullptr;
+    std::atomic<float>* padReleaseParam = nullptr;
+    std::atomic<float>* padBarsParam = nullptr;
+    std::atomic<float>* padBallParam = nullptr;
+    std::atomic<float>* padFrictionParam = nullptr;
+    std::atomic<float>* padWrapParam = nullptr;
+
+    cmperf::PadHost padHost;
+    float padAmount = 0.0f;                 // the pad's amount after the last block (audio thread)
+    std::atomic<float> displayDensity { 50.0f };
+    std::atomic<float> displayComplexity { 0.0f };
+
+    // The pad's loop as the session saves it (encodeGesture's text, empty for
+    // none). Message thread, but a host may save from another, hence the lock.
+    cmperf::PadGesture polledGesture;
+    juce::String padGestureText;
+    juce::CriticalSection padGestureLock;
 
     PatternEngine patternEngine;
     DrumSynth drumSynth;
@@ -139,7 +177,11 @@ private:
     // the message thread remembers how many it has handled.
     std::atomic<uint32_t> evolveRequests { 0 };
     uint32_t evolveRequestsHandled = 0;
-    void timerCallback() override { handleEvolveRequests(); }
+    void timerCallback() override
+    {
+        handleEvolveRequests();
+        handlePadGesture();
+    }
 
     // Host state for the GUI (see getDisplayBpm).
     static_assert (std::atomic<double>::is_always_lock_free);
@@ -158,8 +200,9 @@ private:
     juce::Random mutationRandom;
 
     void cacheParamPointers();
-    VoiceParams readVoiceParams (int voiceIndex, float densityFactor) const;
+    VoiceParams readVoiceParams (int voiceIndex, float density, float complexity) const;
     HostTimeInfo readHostTime() const;
+    cmperf::PadHost::Settings readPadSettings (const HostTimeInfo& host) const noexcept;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PlydrmAudioProcessor)
 };

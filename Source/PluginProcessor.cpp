@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Engine/Macros.h"
 
 namespace plydrm
 {
@@ -62,6 +63,13 @@ void PlydrmAudioProcessor::cacheParamPointers()
     driveTypeParam = raw (apvts, ParamIDs::driveType);
     limiterParam = raw (apvts, ParamIDs::limiter);
     autoEvolveParam = raw (apvts, ParamIDs::autoEvolve);
+    complexityParam = raw (apvts, ParamIDs::complexity);
+    padHoldParam = raw (apvts, ParamIDs::padHold);
+    padReleaseParam = raw (apvts, ParamIDs::padRelease);
+    padBarsParam = raw (apvts, ParamIDs::padBars);
+    padBallParam = raw (apvts, ParamIDs::padBall);
+    padFrictionParam = raw (apvts, ParamIDs::padFriction);
+    padWrapParam = raw (apvts, ParamIDs::padWrap);
 }
 
 void PlydrmAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -70,6 +78,7 @@ void PlydrmAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     patternEngine.prepareToPlay (sampleRate);
     drumSynth.prepare (sampleRate);
     outputStage.prepare (sampleRate, masterGainParam->load());
+    padHost.prepare (sampleRate);           // keeps a recorded loop
     juce::ignoreUnused (samplesPerBlock);
     samplePosition = 0;
 
@@ -87,23 +96,42 @@ bool PlydrmAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
            || layouts.getMainOutputChannelSet() == juce::AudioChannelSet::mono();
 }
 
-VoiceParams PlydrmAudioProcessor::readVoiceParams (int voiceIndex, float densityFactor) const
+VoiceParams PlydrmAudioProcessor::readVoiceParams (int voiceIndex, float density, float complexity) const
 {
     const auto& p = voiceParams[static_cast<size_t> (voiceIndex)];
 
     VoiceParams vp;
     vp.enabled = p.enabled->load() > 0.5f;
     vp.steps = juce::jlimit (1, 32, static_cast<int> (std::lround (p.steps->load())));
-
-    const int baseHits = static_cast<int> (std::lround (p.hits->load()));
-    vp.hits = juce::jlimit (0, vp.steps, static_cast<int> (std::lround (static_cast<float> (baseHits) * densityFactor)));
-
+    vp.hits = static_cast<int> (std::lround (p.hits->load()));     // scaled by Density in applyMacros
     vp.rotation = static_cast<int> (std::lround (p.rotation->load()));
     vp.probabilityPercent = p.probability->load();
     vp.everyN = juce::jlimit (1, 8, static_cast<int> (std::lround (p.everyN->load())));
     vp.swingPercent = p.swing->load();
     vp.humanizeMs = p.humanizeMs->load();
-    return vp;
+    return applyMacros (vp, static_cast<VoiceId> (voiceIndex), density, complexity);
+}
+
+cmperf::PadHost::Settings PlydrmAudioProcessor::readPadSettings (const HostTimeInfo& host) const noexcept
+{
+    cmperf::PadHost::Settings s;
+    s.hold = padHoldParam->load() > 0.5f;
+    s.releaseSeconds = padReleaseParam->load();
+    s.ball = padBallParam->load() > 0.5f;
+    s.friction = padFrictionParam->load();
+    s.wrap = padWrapParam->load() > 0.5f;
+
+    // Pad Motion on cmperf's beat clock: a recording lasts the chosen bars at the
+    // host's tempo and stays on the bar (locked to the host's beat position
+    // while it plays), as Aether's and Brimstone's pads do.
+    const int bars = 1 << juce::jlimit (0, 2, static_cast<int> (std::lround (padBarsParam->load())));
+    const int num = host.hasTimeSig ? juce::jmax (1, host.timeSigNum) : 4;
+    const int den = host.hasTimeSig ? juce::jmax (1, host.timeSigDen) : 4;
+    s.loopBeats = static_cast<double> (bars) * 4.0 * static_cast<double> (num) / static_cast<double> (den);
+    s.bpm = juce::jlimit (20.0, 999.0, host.hasBpm && host.bpm > 0.0 ? host.bpm : 120.0);
+    s.ppq = host.ppq;
+    s.hostPlaying = host.isPlaying && host.hasPpq;
+    return s;
 }
 
 HostTimeInfo PlydrmAudioProcessor::readHostTime() const
@@ -159,11 +187,30 @@ void PlydrmAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     patternEngine.setEvolveInterval (autoEvolveBars[static_cast<size_t> (autoEvolveIndex)]);
 
     // --- Pull latest parameter values into the engine ----------------------
-    const float density = densityParam->load();
-    const float densityFactor = 0.4f + (density / 100.0f) * 1.2f; // 50% -> 1.0x
+    // The perform pad moves Density (across) and Complexity (up) from their
+    // knobs toward where it is, by its amount: untouched (amount 0) the knobs
+    // play exactly as set.
+    // Pad Hold keeps what a touch gave, and never takes over by itself:
+    // PadHost's Hold raises the amount to 1 even on an untouched pad (the
+    // KP3's Hold), which here would jump both macros to the pad's centre, so
+    // it applies only while the pad has some amount.
+    auto padSettings = readPadSettings (host);
+    padSettings.hold = padSettings.hold && padAmount > 0.0f;
+    const auto& pad = padHost.process (numSamples, padSettings);
+    padAmount = pad.amount;
+    float density = densityParam->load();
+    float complexity = complexityParam->load();
+    if (pad.amount > 0.0f)
+    {
+        const float a = juce::jlimit (0.0f, 1.0f, pad.amount);
+        density += (100.0f * juce::jlimit (0.0f, 1.0f, pad.x) - density) * a;
+        complexity += (100.0f * juce::jlimit (0.0f, 1.0f, pad.y) - complexity) * a;
+    }
+    displayDensity.store (density, std::memory_order_relaxed);
+    displayComplexity.store (complexity, std::memory_order_relaxed);
 
     for (int i = 0; i < numVoices; ++i)
-        patternEngine.setVoiceParams (static_cast<VoiceId> (i), readVoiceParams (i, densityFactor));
+        patternEngine.setVoiceParams (static_cast<VoiceId> (i), readVoiceParams (i, density, complexity));
 
     // --- Generate this block's triggers -------------------------------------
     triggers.clear();
@@ -339,13 +386,42 @@ namespace
     // The seed is session state, not a parameter (a float parameter can't hold 32 bits exactly, and nobody
     // automates a seed), so it is saved as a property of the state tree.
     const juce::Identifier seedProperty { "seed" };
+
+    // The perform pad's recorded loop: a PAD child whose gesture property is
+    // cmperf::encodeGesture's text (Brimstone and Aether save theirs the same way).
+    const juce::Identifier padTag { "PAD" };
+    const juce::Identifier gestureProperty { "gesture" };
+}
+
+void PlydrmAudioProcessor::handlePadGesture()
+{
+    if (padHost.pollGesture (polledGesture))
+    {
+        const auto text = polledGesture.length > 0 ? juce::String (cmperf::encodeGesture (polledGesture)) : juce::String();
+        const juce::ScopedLock lock (padGestureLock);
+        padGestureText = text;
+    }
 }
 
 void PlydrmAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    // A loop closed since the timer's last look is saved too (pollGesture has one reader: the message thread).
+    if (juce::MessageManager::existsAndIsCurrentThread())
+        handlePadGesture();
+
     if (auto state = apvts.copyState(); state.isValid())
     {
         state.setProperty (seedProperty, juce::String (getSeed()), nullptr);
+        state.removeChild (state.getChildWithName (padTag), nullptr);
+        {
+            const juce::ScopedLock lock (padGestureLock);
+            if (padGestureText.isNotEmpty())
+            {
+                juce::ValueTree pad (padTag);
+                pad.setProperty (gestureProperty, padGestureText, nullptr);
+                state.appendChild (pad, nullptr);
+            }
+        }
         if (auto xml = state.createXml())
             copyXmlToBinary (*xml, destData);
     }
@@ -363,6 +439,19 @@ void PlydrmAudioProcessor::setStateInformation (const void* data, int sizeInByte
             if (state.hasProperty (seedProperty))
                 setSeed (static_cast<uint32_t> (state[seedProperty].toString().getLargeIntValue()));
             state.removeProperty (seedProperty, nullptr);
+
+            // The pad's loop, playing if it was saved playing; a session without
+            // one (or saved before the pad existed) leaves the pad empty.
+            cmperf::PadGesture gesture;
+            const auto pad = state.getChildWithName (padTag);
+            if (! pad.isValid() || ! cmperf::decodeGesture (pad[gestureProperty].toString().toStdString(), gesture))
+                gesture.clear();
+            padHost.loadGesture (gesture);
+            {
+                const juce::ScopedLock lock (padGestureLock);
+                padGestureText = gesture.length > 0 ? juce::String (cmperf::encodeGesture (gesture)) : juce::String();
+            }
+            state.removeChild (pad, nullptr);
 
             apvts.replaceState (state);
         }

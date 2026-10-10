@@ -4,6 +4,7 @@
 #include "PluginProcessor.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <XYPad.h>
 #include <array>
 #include <memory>
 
@@ -41,7 +42,9 @@ struct ChoiceControl
 };
 
 /** Layout: the pattern view across the top, one row of knobs per voice
-    under it, and the global controls in a column on the right. */
+    under it, the global controls in a column on the right of them, and the
+    perform pad (Density across, Complexity up) with its Pad Motion controls
+    in a column of its own at the right edge. */
 class PlydrmAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                           private juce::Timer
 {
@@ -53,6 +56,11 @@ public:
     void resized() override;
 
     PatternView& getPatternView() noexcept { return patternView; }
+    cmperf::ui::XYPad& getPad() noexcept { return pad; }
+    /** Pad Motion's Record (0), Play (1) and Clear (2). */
+    juce::TextButton& getMotionButton (int i) noexcept { return i == 0 ? padRecord : i == 1 ? padPlay : padClear; }
+    /** What the editor's timer does (tests call it directly). */
+    void refresh() { timerCallback(); }
 
 private:
     PlydrmAudioProcessor& plydrmProcessor;
@@ -67,7 +75,24 @@ private:
     juce::Rectangle<int> globalPanelBounds;
 
     KnobControl densityKnob;
+    KnobControl complexityKnob;
     KnobControl masterGainKnob;
+
+    // The perform pad and Pad Motion. Record / Play / Clear say what pressing
+    // them does; Play and Clear are on only with a loop; Friction and Wrap
+    // only with the Ball on.
+    juce::Rectangle<int> padPanelBounds;
+    cmperf::ui::XYPad pad;
+    juce::Point<float> padFinger { 0.5f, 0.5f };
+    juce::TextButton padRecord { "Record" }, padPlay { "Play" }, padClear { "Clear" };
+    juce::ToggleButton padHoldToggle { "Hold" }, padBallToggle { "Ball" }, padWrapToggle { "Wrap" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> padHoldAttachment, padBallAttachment, padWrapAttachment;
+    ChoiceControl padBars;
+    KnobControl padReleaseKnob;
+    KnobControl padFrictionKnob;
+    int shownMotion = -1, shownBall = -1;
+    void setupPad();
+    void refreshPad();
     ChoiceControl stepDivision;
     ChoiceControl driveType;
     ChoiceControl autoEvolve;

@@ -15,9 +15,10 @@ namespace
     constexpr int captionHeight = 14;
     constexpr int globalWidth = 230;
     constexpr int numVoiceKnobs = 10;
+    constexpr int padColumnWidth = 250;
 
     constexpr int voiceAreaWidth = rowTitleWidth + knobWidth * numVoiceKnobs;
-    constexpr int editorWidth = margin + voiceAreaWidth + margin + globalWidth + margin;
+    constexpr int editorWidth = margin + voiceAreaWidth + margin + globalWidth + margin + padColumnWidth + margin;
     constexpr int editorHeight = margin + headerHeight + 6 + patternHeight + 8 + rowHeight * numVoices + margin;
 }
 
@@ -54,7 +55,10 @@ PlydrmAudioProcessorEditor::PlydrmAudioProcessorEditor (PlydrmAudioProcessor& p)
 
     const auto accent = theme::text.withAlpha (0.8f);
     setupKnob (densityKnob, "Density", ParamIDs::density, accent);
+    setupKnob (complexityKnob, "Complexity", ParamIDs::complexity, accent);
+    complexityKnob.slider.setTooltip ("Pulls the voices apart: shorter, odd loop lengths against the kick, and hits that drop out");
     setupKnob (masterGainKnob, "Master Gain", ParamIDs::masterGain, accent);
+    setupPad();
     setupChoice (stepDivision, "Step", ParamIDs::stepDivision,
                  juce::StringArray (stepDivisionChoices.data(), (int) stepDivisionChoices.size()));
     setupChoice (driveType, "Drive", ParamIDs::driveType,
@@ -85,7 +89,99 @@ PlydrmAudioProcessorEditor::PlydrmAudioProcessorEditor (PlydrmAudioProcessor& p)
 
     setSize (editorWidth, editorHeight);
     timerCallback();   // fill in the tempo now, not on the first tick
-    startTimerHz (4);
+    startTimerHz (30); // the pad's cursor, ball and motion badge follow the audio thread
+}
+
+void PlydrmAudioProcessorEditor::setupPad()
+{
+    using Command = cmperf::PadHost::Command;
+    using Motion = cmperf::PadHost::Motion;
+    auto& host = plydrmProcessor.getPadHost();
+
+    pad.setLabels ("Density", "Complexity");
+    pad.setTooltip ("Density across, Complexity up. A touch takes both over from their knobs; letting go gives them back");
+    pad.setColour (cmperf::ui::XYPad::backgroundColourId, theme::cell);
+    pad.setColour (cmperf::ui::XYPad::outlineColourId, theme::outline);
+    pad.setColour (cmperf::ui::XYPad::textColourId, theme::dimText);
+    // One finger steers (the first down); the others are ignored.
+    pad.onTouchDown = [this, &host] (int finger, float x, float y, float)
+    {
+        if (finger != 0)
+            return;
+        padFinger = { x, y };
+        host.setFinger (x, y, true);
+    };
+    pad.onTouchMove = pad.onTouchDown;
+    pad.onTouchUp = [this, &host] (int finger)
+    {
+        if (finger == 0)
+            host.setFinger (padFinger.x, padFinger.y, false);
+    };
+    addAndMakeVisible (pad);
+
+    padRecord.onClick = [&host]
+    {
+        const auto motion = host.display().motion;
+        host.command (motion == Motion::armed || motion == Motion::recording ? Command::stop : Command::record);
+    };
+    padPlay.onClick = [&host] { host.command (Command::togglePlay); };
+    padClear.onClick = [&host] { host.command (Command::clear); };
+    padRecord.setTooltip ("Records the pad from the next touch for the Motion length, then loops it on the bar");
+    padPlay.setTooltip ("Plays or stops the recorded motion (a finger on the pad takes over while it plays)");
+    padClear.setTooltip ("Forgets the recorded motion");
+    padRecord.setClickingTogglesState (false);
+    padRecord.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffb04848));
+    for (auto* b : { &padRecord, &padPlay, &padClear })
+        addAndMakeVisible (*b);
+
+    padHoldToggle.setTooltip ("Keeps the pad's Density and Complexity after the finger lifts");
+    padBallToggle.setTooltip ("A lift flicks a ball that keeps moving the macros");
+    padWrapToggle.setTooltip ("The ball wraps round the edges instead of bouncing (with Friction 0 it never stops)");
+    for (auto* t : { &padHoldToggle, &padBallToggle, &padWrapToggle })
+        addAndMakeVisible (*t);
+    padHoldAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        plydrmProcessor.apvts, ParamIDs::padHold, padHoldToggle);
+    padBallAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        plydrmProcessor.apvts, ParamIDs::padBall, padBallToggle);
+    padWrapAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        plydrmProcessor.apvts, ParamIDs::padWrap, padWrapToggle);
+
+    setupChoice (padBars, "Motion", ParamIDs::padBars, juce::StringArray (padBarsChoices.data(), (int) padBarsChoices.size()));
+    padBars.box.setTooltip ("How long a recording is");
+    const auto accent = theme::text.withAlpha (0.8f);
+    setupKnob (padReleaseKnob, "Release", ParamIDs::padRelease, accent);
+    setupKnob (padFrictionKnob, "Friction", ParamIDs::padFriction, accent);
+}
+
+void PlydrmAudioProcessorEditor::refreshPad()
+{
+    using Motion = cmperf::PadHost::Motion;
+    const auto d = plydrmProcessor.getPadHost().display();
+
+    // The cursor is the macros in effect: the knobs while untouched, dimmed.
+    pad.setCursor (plydrmProcessor.getDisplayDensity() / 100.0f, plydrmProcessor.getDisplayComplexity() / 100.0f, true);
+    pad.setAmount (d.amount);
+    pad.setState (static_cast<cmperf::ui::Motion> (d.motion), d.held, d.phase);
+    const bool ballOn = plydrmProcessor.apvts.getRawParameterValue (ParamIDs::padBall)->load() > 0.5f;
+    pad.setBall (d.ballX, d.ballY, ballOn);
+
+    if (static_cast<int> (d.motion) != shownMotion)
+    {
+        shownMotion = static_cast<int> (d.motion);
+        const bool recording = d.motion == Motion::armed || d.motion == Motion::recording;
+        const bool hasLoop = d.motion == Motion::playing || d.motion == Motion::stopped;
+        padRecord.setButtonText (d.motion == Motion::armed ? "Waiting..." : recording ? "Stop Rec" : "Record");
+        padRecord.setToggleState (recording, juce::dontSendNotification);
+        padPlay.setButtonText (d.motion == Motion::playing ? "Stop" : "Play");
+        padPlay.setEnabled (hasLoop);
+        padClear.setEnabled (hasLoop);
+    }
+    if ((ballOn ? 1 : 0) != shownBall)
+    {
+        shownBall = ballOn ? 1 : 0;
+        padFrictionKnob.slider.setEnabled (ballOn);
+        padWrapToggle.setEnabled (ballOn);
+    }
 }
 
 PlydrmAudioProcessorEditor::~PlydrmAudioProcessorEditor()
@@ -175,6 +271,7 @@ void PlydrmAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (theme::panel);
     g.fillRoundedRectangle (globalPanelBounds.toFloat(), 8.0f);
+    g.fillRoundedRectangle (padPanelBounds.toFloat(), 8.0f);
 }
 
 void PlydrmAudioProcessorEditor::resized()
@@ -185,6 +282,36 @@ void PlydrmAudioProcessorEditor::resized()
     titleLabel.setBounds (header.removeFromLeft (200));
     tempoLabel.setBounds (header);
     area.removeFromTop (6);
+
+    padPanelBounds = area.removeFromRight (padColumnWidth);
+    area.removeFromRight (margin);
+    {
+        auto column = padPanelBounds.reduced (12, 10);
+        pad.setBounds (column.removeFromTop (column.getWidth()));
+        column.removeFromTop (8);
+
+        auto buttons = column.removeFromTop (28);
+        const int third = buttons.getWidth() / 3;
+        padRecord.setBounds (buttons.removeFromLeft (third).reduced (2, 0));
+        padPlay.setBounds (buttons.removeFromLeft (third).reduced (2, 0));
+        padClear.setBounds (buttons.reduced (2, 0));
+        column.removeFromTop (6);
+
+        auto toggles = column.removeFromTop (22);
+        padHoldToggle.setBounds (toggles.removeFromLeft (third));
+        padBallToggle.setBounds (toggles.removeFromLeft (third));
+        padWrapToggle.setBounds (toggles);
+        column.removeFromTop (6);
+
+        auto line = column.removeFromTop (24);
+        padBars.caption.setBounds (line.removeFromLeft (56));
+        padBars.box.setBounds (line);
+        column.removeFromTop (6);
+
+        auto knobs = column.removeFromTop (rowHeight - 8);
+        placeKnob (padReleaseKnob, knobs.removeFromLeft (knobs.getWidth() / 2));
+        placeKnob (padFrictionKnob, knobs);
+    }
 
     patternView.setBounds (area.removeFromTop (patternHeight));
     area.removeFromTop (8);
@@ -212,7 +339,9 @@ void PlydrmAudioProcessorEditor::resized()
     auto panel = globalPanelBounds.reduced (12, 8);
 
     auto knobRow = panel.removeFromTop (rowHeight - 8);
-    placeKnob (densityKnob, knobRow.removeFromLeft (knobRow.getWidth() / 2));
+    const int knobThird = knobRow.getWidth() / 3;
+    placeKnob (densityKnob, knobRow.removeFromLeft (knobThird));
+    placeKnob (complexityKnob, knobRow.removeFromLeft (knobThird));
     placeKnob (masterGainKnob, knobRow);
     panel.removeFromTop (8);
 
@@ -237,14 +366,17 @@ void PlydrmAudioProcessorEditor::resized()
 
 void PlydrmAudioProcessorEditor::timerCallback()
 {
+    refreshPad();
+
     seedLabel.setText ("Seed " + juce::String::toHexString ((juce::int64) plydrmProcessor.getSeed()).toUpperCase().paddedLeft ('0', 8),
                        juce::dontSendNotification);
 
     // Read what the audio thread published: the play head may only be asked
     // from inside processBlock.
     if (plydrmProcessor.hostReportsTempo())
-        tempoLabel.setText (juce::String::formatted ("%.1f BPM%s", plydrmProcessor.getDisplayBpm(),
-                                                     plydrmProcessor.hostIsPlaying() ? "  -  playing" : "  -  stopped"),
+        // Not formatted ("%s"): JUCE formats with wide characters, so a narrow string there reads as garbage.
+        tempoLabel.setText (juce::String (plydrmProcessor.getDisplayBpm(), 1) + " BPM"
+                                + (plydrmProcessor.hostIsPlaying() ? "  -  playing" : "  -  stopped"),
                             juce::dontSendNotification);
     else
         tempoLabel.setText (juce::String::formatted ("free-run %.0f BPM", plydrmProcessor.getDisplayBpm()),

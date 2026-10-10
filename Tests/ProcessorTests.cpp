@@ -216,6 +216,15 @@ int main()
             setParam (p, ParamIDs::stepDivision, static_cast<float> ((block / 40) % 3));
             if (block % 7 == 0)
                 p.randomizeSeed();
+            // The perform pad: a finger sweeping, a ball, recording and playing, Complexity moving.
+            setParam (p, ParamIDs::complexity, static_cast<float> ((block * 11) % 101));
+            setParam (p, ParamIDs::padBall, (block / 300) % 2 == 0 ? 0.0f : 1.0f);
+            p.getPadHost().setFinger (static_cast<float> (block % 50) / 50.0f, static_cast<float> (block % 37) / 37.0f,
+                                      (block / 20) % 3 != 2);
+            if (block % 500 == 100)
+                p.getPadHost().command (cmperf::PadHost::Command::record);
+            if (block % 500 == 400)
+                p.getPadHost().command (cmperf::PadHost::Command::clear);
             if (block % 150 == 0)
                 setParam (p, ParamIDs::midiOutEnabled, (block / 150) % 2 == 0 ? 1.0f : 0.0f);
             ph.playing = (block / 200) % 4 != 3;
@@ -416,6 +425,140 @@ int main()
             p.handleEvolveRequests();
         }
         check (snapshot() == still, "with Auto Evolve off nothing changes");
+    }
+
+    std::printf ("the perform pad: Density across, Complexity up\n");
+    {
+        auto lengths = [] (PlydrmAudioProcessor& p)
+        {
+            juce::String s;
+            for (int v = 0; v < numVoices; ++v)
+                s << p.getDisplayPattern (static_cast<VoiceId> (v)).length << " ";
+            return s.trim();
+        };
+        auto run = [] (PlydrmAudioProcessor& p, FakePlayHead& ph, int64_t& pos, int blocks)
+        {
+            juce::AudioBuffer<float> buffer (2, 512);
+            juce::MidiBuffer midi;
+            for (int b = 0; b < blocks; ++b, pos += 512)
+            {
+                ph.moveTo (pos);
+                midi.clear();
+                p.processBlock (buffer, midi);
+            }
+        };
+
+        PlydrmAudioProcessor p;
+        FakePlayHead ph;
+        p.setPlayHead (&ph);
+        p.prepareToPlay (kSampleRate, 512);
+        int64_t pos = 0;
+        run (p, ph, pos, 4);
+        check (lengths (p) == "16 16 12 10", "untouched, the voices play their own lengths (" + lengths (p) + ")");
+        check (std::abs (p.getDisplayDensity() - 50.0f) < 1.0e-6f && p.getDisplayComplexity() == 0.0f,
+               "untouched, the knobs are what is in effect");
+
+        // Pad Hold on an untouched pad takes nothing over (it keeps what a touch gave).
+        setParam (p, ParamIDs::padHold, 1.0f);
+        run (p, ph, pos, 20);
+        check (std::abs (p.getDisplayDensity() - 50.0f) < 1.0e-6f && p.getDisplayComplexity() == 0.0f,
+               "Pad Hold on an untouched pad changes nothing");
+        setParam (p, ParamIDs::padHold, 0.0f);
+
+        setParam (p, ParamIDs::complexity, 100.0f);
+        run (p, ph, pos, 2);
+        check (lengths (p) == "16 15 11 7", "the Complexity knob at 100 % gives 16 15 11 7 (" + lengths (p) + ")");
+        setParam (p, ParamIDs::complexity, 0.0f);
+        run (p, ph, pos, 2);
+
+        // A finger in the top-right corner takes both macros to 100 %.
+        auto& host = p.getPadHost();
+        host.setFinger (1.0f, 1.0f, true);
+        run (p, ph, pos, 20);
+        check (p.getDisplayDensity() > 99.0f && p.getDisplayComplexity() > 99.0f,
+               "a touch top right takes Density and Complexity to 100 % (" + juce::String (p.getDisplayDensity()) + ", "
+                   + juce::String (p.getDisplayComplexity()) + ")");
+        check (lengths (p) == "16 15 11 7", "and the loops shorten as the knob would");
+        const auto kick = p.getDisplayPattern (VoiceId::Kick);
+        int kickHits = 0;
+        for (int k = 0; k < kick.length; ++k)
+            kickHits += kick[k] ? 1 : 0;
+        check (kickHits == 6, "Density 100 % gives the kick 1.6x its 4 hits (" + juce::String (kickHits) + ")");
+
+        // The lift releases over Pad Release (0.5 s): a second later the knobs are back.
+        host.setFinger (1.0f, 1.0f, false);
+        run (p, ph, pos, 100);
+        check (std::abs (p.getDisplayDensity() - 50.0f) < 0.01f && p.getDisplayComplexity() < 0.01f && lengths (p) == "16 16 12 10",
+               "a second after the lift the knobs are back (" + juce::String (p.getDisplayDensity()) + ", "
+                   + juce::String (p.getDisplayComplexity()) + ")");
+
+        // With Pad Hold the pad keeps them.
+        setParam (p, ParamIDs::padHold, 1.0f);
+        host.setFinger (0.0f, 1.0f, true);
+        run (p, ph, pos, 20);
+        host.setFinger (0.0f, 1.0f, false);
+        run (p, ph, pos, 100);
+        check (p.getDisplayDensity() < 0.01f && p.getDisplayComplexity() > 99.99f, "with Pad Hold the pad keeps them after the lift");
+        setParam (p, ParamIDs::padHold, 0.0f);
+        run (p, ph, pos, 100);
+        check (std::abs (p.getDisplayDensity() - 50.0f) < 0.01f, "Hold off gives the knobs back");
+    }
+
+    std::printf ("Pad Motion is saved with the session\n");
+    {
+        PlydrmAudioProcessor p;
+        FakePlayHead ph;
+        p.setPlayHead (&ph);
+        p.prepareToPlay (kSampleRate, 512);
+        auto& host = p.getPadHost();
+        juce::AudioBuffer<float> buffer (2, 512);
+        juce::MidiBuffer midi;
+
+        // Record one bar (2 s at 120 BPM) of a finger sweeping across the pad.
+        host.command (cmperf::PadHost::Command::record);
+        int64_t pos = 0;
+        for (; pos < 96000 + 48000; pos += 512)
+        {
+            host.setFinger (static_cast<float> (pos % 96000) / 96000.0f, 0.5f, pos < 96000);
+            ph.moveTo (pos);
+            midi.clear();
+            p.processBlock (buffer, midi);
+        }
+        check (host.display().motion == cmperf::PadHost::Motion::playing, "a recording closes itself after a bar and plays");
+        p.handlePadGesture();
+
+        juce::MemoryBlock saved;
+        p.getStateInformation (saved);
+        const auto xml = juce::AudioProcessor::getXmlFromBinary (saved.getData(), (int) saved.getSize());
+        check (xml != nullptr && xml->getChildByName ("PAD") != nullptr, "the session has a PAD child");
+
+        PlydrmAudioProcessor loaded;
+        FakePlayHead ph2;
+        loaded.setPlayHead (&ph2);
+        loaded.prepareToPlay (kSampleRate, 512);
+        loaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        midi.clear();
+        loaded.processBlock (buffer, midi);
+        check (loaded.getPadHost().display().motion == cmperf::PadHost::Motion::playing, "the loaded session's loop plays");
+        juce::MemoryBlock resaved;
+        loaded.getStateInformation (resaved);
+        check (resaved == saved, "and saves the same session again");
+
+        // Clear forgets it, and the session then has no PAD child.
+        host.command (cmperf::PadHost::Command::clear);
+        midi.clear();
+        p.processBlock (buffer, midi);
+        p.handlePadGesture();
+        juce::MemoryBlock cleared;
+        p.getStateInformation (cleared);
+        const auto clearedXml = juce::AudioProcessor::getXmlFromBinary (cleared.getData(), (int) cleared.getSize());
+        check (clearedXml != nullptr && clearedXml->getChildByName ("PAD") == nullptr, "after Clear the session has no loop");
+
+        // Loading a session without a loop empties a pad that had one.
+        loaded.setStateInformation (cleared.getData(), (int) cleared.getSize());
+        midi.clear();
+        loaded.processBlock (buffer, midi);
+        check (loaded.getPadHost().display().motion == cmperf::PadHost::Motion::idle, "a session without a loop leaves the pad empty");
     }
 
     if (failures == 0)
