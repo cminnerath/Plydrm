@@ -9,6 +9,7 @@
 #include "../Source/PluginEditor.h"
 #include "FakeHost.h"
 
+#include <cmath>
 #include <cstdio>
 
 using namespace plydrm;
@@ -114,6 +115,48 @@ int main (int argc, char** argv)
         check (view.cellBounds (2, 11).getRight() < view.cellBounds (2, 12).getX(), "pattern cells don't overlap");
         check (view.getLocalBounds().contains (view.cellBounds (numVoices - 1, kMaxPatternSteps - 1)),
                "the last cell fits in the pattern view");
+    }
+
+    std::printf ("tempo label\n");
+    {
+        editor->refresh();
+        juce::String tempo;
+        for (auto* c : editor->getChildren())
+            if (auto* label = dynamic_cast<juce::Label*> (c); label != nullptr && label->getText().contains ("BPM"))
+                tempo = label->getText();
+        check (tempo == "120.0 BPM  -  playing", "the tempo label reads '120.0 BPM  -  playing' (got '" + tempo + "')");
+    }
+
+    std::printf ("perform pad\n");
+    {
+        auto& pad = editor->getPad();
+        check (pad.isVisible() && pad.getWidth() >= 200 && pad.getWidth() == pad.getHeight(), "the pad is a visible square of at least 200 px");
+        editor->refresh();
+        check (! editor->getMotionButton (1).isEnabled() && ! editor->getMotionButton (2).isEnabled(),
+               "with no loop Play and Clear are off");
+        check (editor->getMotionButton (0).getButtonText() == "Record", "Record says Record");
+        check (std::abs (p.getDisplayDensity() - 50.0f) < 1.0e-6f, "untouched, the Density knob is in effect");
+
+        // Record: the button says it waits for a touch, then plays a bar later.
+        p.getPadHost().command (cmperf::PadHost::Command::record);
+        midi.clear();
+        p.processBlock (buffer, midi);
+        editor->refresh();
+        check (editor->getMotionButton (0).getButtonText() == "Waiting...", "armed, Record says Waiting...");
+        for (int b = 0; b < 200; ++b)
+        {
+            p.getPadHost().setFinger (0.8f, 0.6f, b < 100);
+            ph.moveTo ((juce::int64) (200 + b) * 512);
+            midi.clear();
+            p.processBlock (buffer, midi);
+        }
+        editor->refresh();
+        check (p.getPadHost().display().motion == cmperf::PadHost::Motion::playing, "the recording plays after a bar");
+        check (editor->getMotionButton (1).isEnabled() && editor->getMotionButton (1).getButtonText() == "Stop"
+                   && editor->getMotionButton (2).isEnabled(),
+               "while it plays Play says Stop and Clear is on");
+        check (std::abs (p.getDisplayDensity() - 80.0f) < 1.0f && std::abs (p.getDisplayComplexity() - 60.0f) < 1.0f,
+               "the loop plays the macros (" + juce::String (p.getDisplayDensity()) + ", " + juce::String (p.getDisplayComplexity()) + ")");
     }
 
     if (argc > 1)

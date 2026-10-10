@@ -32,7 +32,8 @@ if(PLYDRM_BUILD_TESTS)
         Tests/TestMain.cpp
         Tests/EuclideanTests.cpp
         Tests/PatternEngineTests.cpp
-        Tests/SynthTests.cpp)
+        Tests/SynthTests.cpp
+        Tests/MacroTests.cpp)
     target_link_libraries(PlydrmTests PRIVATE plydrm_engine)
     add_test(NAME PlydrmTests COMMAND PlydrmTests)
 endif()
@@ -51,6 +52,28 @@ if(PLYDRM_BUILD_PLUGIN)
             GIT_SHALLOW    TRUE)
         FetchContent_MakeAvailable(juce)
     endif()
+
+    # cmperf: the performance-surface library shared with Brimstone and Crucible (the perform pad's logic in cmperf_core,
+    # the XY pad component in cmperf_ui; https://github.com/cminnerath/cmperf, private). Pinned to a tag like JUCE;
+    # -DPLYDRM_CMPERF_PATH=../cmperf builds against a local checkout while working on both. After JUCE: cmperf_ui's .cpp
+    # files compile inside the plugin with its JUCE modules.
+    set(PLYDRM_CMPERF_PATH "" CACHE PATH "Path to a local cmperf checkout. Leave empty to download the pinned tag.")
+    set(CMPERF_BUILD_TESTS OFF CACHE BOOL "cmperf's own tests (run them in the cmperf repository)" FORCE)
+    if(PLYDRM_CMPERF_PATH)
+        add_subdirectory(${PLYDRM_CMPERF_PATH} cmperf)
+    else()
+        include(FetchContent)
+        FetchContent_Declare(cmperf
+            GIT_REPOSITORY https://github.com/cminnerath/cmperf.git
+            GIT_TAG        v0.1.26
+            GIT_SHALLOW    TRUE)
+        FetchContent_MakeAvailable(cmperf)
+    endif()
+    # cmperf's headers are system includes here: its warning set is its own repository's business.
+    foreach(lib cmperf_core cmperf_ui)
+        get_target_property(cmperf_dirs ${lib} INTERFACE_INCLUDE_DIRECTORIES)
+        set_target_properties(${lib} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${cmperf_dirs}")
+    endforeach()
 
     # AU only exists on macOS. Standalone is handy for quick tests without a DAW
     # (with no host transport the pattern free-runs at 120 BPM).
@@ -91,6 +114,8 @@ if(PLYDRM_BUILD_PLUGIN)
     target_link_libraries(Plydrm
         PRIVATE
             plydrm_engine
+            cmperf_core
+            cmperf_ui
             juce::juce_audio_utils
             juce::juce_dsp
         PUBLIC
@@ -105,9 +130,11 @@ if(PLYDRM_BUILD_PLUGIN)
         # (`SoakTests full` is the long version).
         foreach(test_name ProcessorTests SoakTests EditorTests)
             add_executable(${test_name} Tests/${test_name}.cpp)
-            target_link_libraries(${test_name} PRIVATE Plydrm plydrm_engine)
+            target_link_libraries(${test_name} PRIVATE Plydrm plydrm_engine cmperf_core)
+            # cmperf_ui's headers only: its .cpp files are already compiled into the plugin's shared code.
             target_include_directories(${test_name} PRIVATE
-                $<TARGET_PROPERTY:Plydrm,INCLUDE_DIRECTORIES>)
+                $<TARGET_PROPERTY:Plydrm,INCLUDE_DIRECTORIES>
+                $<TARGET_PROPERTY:cmperf_ui,INTERFACE_INCLUDE_DIRECTORIES>)
             target_compile_definitions(${test_name} PRIVATE
                 $<TARGET_PROPERTY:Plydrm,COMPILE_DEFINITIONS>)
             add_test(NAME ${test_name} COMMAND ${test_name})

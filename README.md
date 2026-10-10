@@ -17,9 +17,19 @@ See [`BUILD.md`](BUILD.md) for build and DAW-loading instructions.
 - Per-voice probability (chance a given hit actually fires) and "fire
   every Nth repeat" conditional triggers.
 - Per-voice swing and randomized micro-timing humanization.
-- A global density/complexity macro, plus an "Evolve / Mutate" button that
-  nudges pattern parameters, and Auto Evolve to do it every 1-16 bars (in
-  time for the downbeat, recorded by the host like a user edit).
+- Two global macros on top of every voice's knobs: **Density** scales the
+  hits (0.4x to 1.6x), and **Complexity** pulls the voices apart (the snare,
+  hat and perc loops shorten to lengths that phase against the kick's, and
+  hits drop out). At their defaults (50 % and 0 %) they change nothing.
+- A **perform pad** (cmperf's XY pad): Density across, Complexity up. A
+  touch takes both macros over from their knobs and letting go hands them
+  back over Release, unless Hold is on. **Pad Motion** records 1, 2 or 4 bars
+  of the pad and loops it on the bar (saved with the session), and **Ball**
+  lets a lift flick a ball that keeps moving them (Wrap with Friction 0
+  never stops).
+- An "Evolve / Mutate" button that nudges pattern parameters, and Auto
+  Evolve to do it every 1-16 bars (in time for the downbeat, recorded by the
+  host like a user edit).
 - A seed behind every random choice (probability rolls, humanize, velocity,
   per-hit sound variation). It is saved with the session, and each random
   value depends only on the seed and the song position, so a session plays
@@ -53,6 +63,7 @@ Source/
     StepRandom.h              Seeded randomness as a function of (seed, voice, step)
     TransportClock.h          Host position -> musical clock (ported from Brimstone)
     PatternEngine.*           Sample-accurate polymetric trigger scheduler
+    Macros.h                  Density and Complexity, applied on top of each voice's knobs
   Synth/
     DrumSynth.*               Kick/snare/hat/perc synthesis voices (plain C++, unit tested)
     OutputStage.h             Smoothed master gain + soft limiter

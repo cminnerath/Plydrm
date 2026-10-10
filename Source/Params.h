@@ -23,7 +23,19 @@ namespace ParamIDs
     static constexpr const char* driveType      = "driveType";
     static constexpr const char* limiter        = "limiter";
     static constexpr const char* autoEvolve     = "autoEvolve";
+    static constexpr const char* complexity     = "complexity";
+
+    // The perform pad (Density across, Complexity up) and its Pad Motion.
+    static constexpr const char* padHold        = "padHold";
+    static constexpr const char* padRelease     = "padRelease";
+    static constexpr const char* padBars        = "padBars";
+    static constexpr const char* padBall        = "padBall";
+    static constexpr const char* padFriction    = "padFriction";
+    static constexpr const char* padWrap        = "padWrap";
 }
+
+/** How long a Pad Motion recording is: 1, 2 or 4 bars (choice index i is 2^i bars). */
+static constexpr std::array<const char*, 3> padBarsChoices { "1 bar", "2 bars", "4 bars" };
 
 /** Auto-evolve choices, and how many bars apart each one evolves (0 = off). */
 static constexpr std::array<const char*, 6> autoEvolveChoices { "Off", "1 bar", "2 bars", "4 bars", "8 bars", "16 bars" };
@@ -152,6 +164,29 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     params.push_back (std::make_unique<juce::AudioParameterChoice> (
         ParamIDs::autoEvolve, "Auto Evolve",
         juce::StringArray (autoEvolveChoices.data(), (int) autoEvolveChoices.size()), 0));
+
+    // Added with the perform pad (after every older parameter, so their order in a host is unchanged).
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        ParamIDs::complexity, "Complexity", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, ValueText::percent()));
+
+    params.push_back (std::make_unique<juce::AudioParameterBool> (ParamIDs::padHold, "Pad Hold", false));
+
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        ParamIDs::padRelease, "Pad Release", juce::NormalisableRange<float> (0.0f, 4.0f, 0.0f, 0.5f), 0.5f,
+        ValueText::withText ([] (float v) { return juce::String (v, 2) + " s"; })));
+
+    params.push_back (std::make_unique<juce::AudioParameterChoice> (
+        ParamIDs::padBars, "Pad Motion Length",
+        juce::StringArray (padBarsChoices.data(), (int) padBarsChoices.size()), 0));
+
+    params.push_back (std::make_unique<juce::AudioParameterBool> (ParamIDs::padBall, "Pad Ball", false));
+
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        ParamIDs::padFriction, "Pad Friction", juce::NormalisableRange<float> (0.0f, 1.0f), 0.3f,
+        ValueText::withText ([] (float v) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; },
+                             [] (const juce::String& t) { return t.retainCharacters ("+-.0123456789").getFloatValue() / 100.0f; })));
+
+    params.push_back (std::make_unique<juce::AudioParameterBool> (ParamIDs::padWrap, "Pad Wrap", false));
 
     return { params.begin(), params.end() };
 }

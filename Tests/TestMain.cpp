@@ -10,12 +10,14 @@ int plydrmTestsFailed = 0;
 void runEuclideanTests();
 void runPatternEngineTests();
 void runSynthTests();
+void runMacroTests();
 
 int main()
 {
     runEuclideanTests();
     runPatternEngineTests();
     runSynthTests();
+    runMacroTests();
 
     if (plydrmTestsFailed == 0)
     {
