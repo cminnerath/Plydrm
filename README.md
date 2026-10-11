@@ -47,6 +47,30 @@ See [`BUILD.md`](BUILD.md) for build and DAW-loading instructions.
 - All parameters exposed via `juce::AudioProcessorValueTreeState`, so
   they're automatable and save/restore with your session.
 
+## Ideas (not done)
+
+From the iOS ambient and drone survey in Crucible
+(`docs/research/ios-ambient-synths-vs-aether.md`, 2026-10-10), the items
+that fit a pattern generator:
+
+- **Seed as a text code:** show the session's seed as a short code
+  (Low Poly Synth's 8 characters) that can be copied and pasted back, so a
+  pattern someone likes is shareable in a message; "New Seed" stays.
+- **Pad Evolve modes** from cmperf item 26: Wander, Breathe and Decay on
+  the perform pad's Density and Complexity position, and a glide time
+  when a position is tapped or automated. Auto Evolve already mutates the
+  pattern on the bar; this moves the macros between mutations.
+- **MIDI learn** for the knobs and the pad's settings (Brimstone's learn
+  is the reference; Crucible is porting it into its shared layer).
+- **Record to file** and Ableton Link in the standalone, if an iOS build
+  is ever made.
+
+Plydrm is also a source for the others: its Auto Evolve (mutate every
+1-16 bars, in time for the downbeat, recorded by the host) and its
+seed-and-song-position randomness are the model for Aether's patch Evolve
+and its randomizer's seed; its MIDI-out path is the one Aether and
+Brimstone copy for a MIDI bus.
+
 ## Project layout
 
 ```
